@@ -1,7 +1,7 @@
 {
     "app-id" : "io.github.kirukomaru11.Shell",
     "runtime" : "org.gnome.Platform",
-    "runtime-version" : "master",
+    "runtime-version" : "51",
     "sdk" : "org.gnome.Sdk",
     "command" : "shell",
     "finish-args" : [ "--device=all", "--device=shm", "--socket=system-bus", "--socket=session-bus", "--socket=inherit-wayland-socket", "--filesystem=host-root", "--filesystem=host", "--filesystem=~/.var/app", "--filesystem=~/.local/share/flatpak", "--filesystem=/boot", "--filesystem=/efi", "--filesystem=/root", "--filesystem=/sys", "--filesystem=/tmp", "--filesystem=/var/lib/flatpak", "--filesystem=/run/user", "--socket=wayland", "--talk-name=org.freedesktop.Flatpak" ],
