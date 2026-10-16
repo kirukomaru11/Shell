@@ -1,0 +1,41 @@
+{
+    "app-id" : "io.github.kirukomaru11.Shell",
+    "runtime" : "org.gnome.Platform",
+    "runtime-version" : "master",
+    "sdk" : "org.gnome.Sdk",
+    "command" : "shell",
+    "finish-args" : [ "--device=all", "--device=shm", "--socket=system-bus", "--socket=session-bus", "--socket=inherit-wayland-socket", "--filesystem=host-root", "--filesystem=host", "--filesystem=~/.var/app", "--filesystem=~/.local/share/flatpak", "--filesystem=/boot", "--filesystem=/efi", "--filesystem=/root", "--filesystem=/sys", "--filesystem=/tmp", "--filesystem=/var/lib/flatpak", "--filesystem=/run/user", "--socket=wayland", "--talk-name=org.freedesktop.Flatpak" ],
+    "modules" : [
+        {
+            "name" : "gtk4-layer-shell",
+            "buildsystem" : "meson",
+            "builddir" : true,
+            "config-opts" : [ "-Dexamples=false", "-Ddocs=false", "-Dtests=false" ],
+            "sources" : [
+                {
+                    "type" : "git",
+                    "url" : "https://github.com/wmww/gtk4-layer-shell.git",
+                    "tag": "v1.3.0"
+                }
+            ]
+        },
+        {
+            "name" : "main",
+            "buildsystem" : "simple",
+            "build-commands" : [ "mv utils/* .", "env", "python ${FLATPAK_ID##*.}.py --install" ],
+            "sources" : [
+                {
+                    "type" : "git",
+                    "url" : "https://github.com/kirukomaru11/Shell.git",
+                    "branch" : "main"
+                },
+                {
+                    "type" : "git",
+                    "url" : "https://github.com/kirukomaru11/Utils.git",
+                    "branch" : "main",
+                    "dest" : "utils"
+                }
+            ]
+        }
+    ]
+}
