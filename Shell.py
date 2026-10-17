@@ -4008,6 +4008,13 @@ def call(dbus=None, _c=None, _s=None, _o=None, i="", m="", p=None, inv=None):
     if m == "ReadAll" and getattr(Settings, "instance", False):
         d = {}
         p = p[0]
+        if GLib.getenv("GSETTINGS") and any(i == "org.gnome.*" for i in p):
+            for i in Gio.SettingsSchemaSource.get_default().list_schemas(False)[0]:
+                if i.startswith("org.gnome."):
+                    s = Gio.Settings.new(i)
+                    d[i] = {}
+                    for it in s.get_property("settings-schema").list_keys():
+                        d[i][it] = s.get_value(it)
         for i, v in Settings.namespaces.items():
             n = v[0]
             if not any(n.startswith(it.strip("*")) if it.endswith("*") else n == it for it in p): continue
