@@ -2389,13 +2389,12 @@ class AppChooser(Window):
     def all_filter_expression(a, b): return bool(b)
     all_filter = Gtk.BoolFilter(expression=Gtk.ClosureExpression.new(bool, all_filter_expression, [Gtk.PropertyExpression.new(DesktopApp, None, "mimetypes")]))
     default_filters = GObject.Property(type=Gtk.EveryFilter)
-    invocation = GObject.Property(type=Gio.DBusMethodInvocation)
 
     def __init__(self, inv=None, handle="", app_id="", parent_window="", choices="", options={}):
         super().__init__()
         self.add_action(Gio.SimpleAction.new_stateful("show-all", None, get_variant(False)))
         self.activation_token = options.get("activation_token", "")
-        self.invocation = inv
+        if inv: inv.return_value(GLib.Variant("(ua{sv})", (1, {})))
         self.uri = options["uri"]
         self.content_type = options.get("content_type", False) or Gio.content_type_guess(self.uri)[0]
         if is_online(self.uri):
@@ -2457,7 +2456,6 @@ class AppChooser(Window):
         l = json(Data.setting("Apps Last Used", {}))
         l[self.content_type] = i.id.rsplit(".desktop", 1)[0]
         Data.setting("Apps Last Used", {}, l)
-        if self.invocation: self.invocation.return_value(GLib.Variant("(ua{sv})", (1, {})))
         self.close()
 
 class DesktopAppItem(Gtk.Image):
