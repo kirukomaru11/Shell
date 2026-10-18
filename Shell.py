@@ -1084,7 +1084,7 @@ class Controller(GObject.Object):
         self.audio_output = "None"
         self.__class__.list.remove(self)
 
-Controller.list = List(Controller, "addr")
+Controller.list = List(Controller, unique="addr", static=True)
 
 class ControllerItem(Adw.Bin):
     __gtype_name__ = "ControllerItem"
@@ -1695,7 +1695,7 @@ class Notification(ListObject):
     @staticmethod
     def remove_all(*_): Notification.list.replace()
 
-Notification.list = List(Notification, None, True)
+Notification.list = List(Notification, list=True)
 
 class NotificationItem(Gtk.Overlay):
     __gtype_name__ = "NotificationItem"
@@ -1900,7 +1900,7 @@ class ClipboardData(ListObject):
         self.paintable = MediaStream(data=self.mimetypes["image/png"])
         if getattr(Clipboard, "instance", False): Task.invoke(Clipboard.instance.masonry.check_layout)
 
-ClipboardData.list = List(ClipboardData, None, True)
+ClipboardData.list = List(ClipboardData, list=True)
 
 class ClipboardItem(Gtk.Overlay):
     __gtype_name__ = "ClipboardItem"
@@ -2377,7 +2377,7 @@ class DesktopApp(ListObject):
         elif isinstance(self.display_icon, Gio.File): i.set_from_file(self.display_icon.get_path())
         elif isinstance(self.display_icon, str): i.set_from_icon_name(self.display_icon)
 
-DesktopApp.list = Gtk.SortListModel(model=List(DesktopApp, "id"))
+DesktopApp.list = Gtk.SortListModel(model=List(DesktopApp, unique="id", static=True))
 
 class AppChooser(Window):
     __gtype_name__ = "AppChooser"
