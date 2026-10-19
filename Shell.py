@@ -2895,10 +2895,15 @@ class PortalFileDialog(FileDialog):
         v = args[-1].get("current_folder", None)
         if v:
             v = Gio.File.new_for_path(bytes(v).rstrip(b"\x00").decode("utf-8"))
+        filters = args[-1].get("filters", None) or None
         default_filter = args[-1].get("current_filter", None)
         if default_filter:
-            default_filter = self.__class__.convert_filter(default_filter)
-        filters = args[-1].get("filters", None) or None
+            if default_filter[1][0][0] == 1 and default_filter[1][0][1] == "*/*":
+                default_filter = None
+            else:
+                if not filters:
+                    filters = [("All Files", [(0, "*")]), default_filter]
+                default_filter = self.__class__.convert_filter(default_filter)
         if filters:
             filters = list(filters)
             if not any(i[0] == "All Files" and i[1][0] == 0 for i in filters): filters.insert(0, ("All Files", [(0, "*")]))
