@@ -47,7 +47,10 @@ from types import MethodType
 from colorsys import hls_to_rgb, rgb_to_hls
 
 if layer_shell:
-    from gi.repository import Gtk4LayerShell as layer_shell
+    try:
+        from gi.repository import Gtk4LayerShell as layer_shell
+    except:
+        layer_shell = False
 
 from gi.repository import GdkWayland
 
