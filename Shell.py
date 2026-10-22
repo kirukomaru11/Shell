@@ -325,10 +325,14 @@ class Wayland:
         Wayland.interfaces = {}
         Gdk.Display.get_default().sync()
         Clipboard()
+        global layer_shell
         if layer_shell and "zwlr_layer_shell_v1" in Wayland.interfaces:
             if Data.setting("Wallpaper", True): Wallpaper()
             if Data.setting("Background", True): Background()
+            if Data.setting("Apps", True): Apps()
             Keyboard()
+        else:
+            layer_shell = False
         Pointer()
         ImageCopy()
 
@@ -2314,8 +2318,10 @@ class DesktopApp(ListObject):
                 p = Path(i, "icons")
                 theme.add_search_path(p)
                 if "/flatpak/" in p:
-                    for r, dd, f in walk(Path(p, "hicolor")):
-                        for it in dd: theme.add_search_path(Path(r, it))
+                    try:
+                        for r, dd, f in walk(Path(p, "hicolor")):
+                            for it in dd: theme.add_search_path(Path(r, it))
+                    except: pass
         for p in d:
             p = Path(p, "applications")
             if not exists(p): continue
@@ -3339,7 +3345,8 @@ class ScreenCast(Prompt):
                 if not Gst.is_initialized(): Gst.init()
                 for i in Gdk.Display.get_default().get_monitors():
                     self.videos[i.get_connector()] = i
-                self.videos["Select Area"] = "Select Area"
+                if layer_shell:
+                    self.videos["Select Area"] = "Select Area"
             if self.invocation and p and hasattr(self.__class__, "iface") and hasattr(Niri, "connection"):
                 self.session = self.__class__.niri_sessions[p[1]]
                 self.videos["niri Dynamic Cast Target"] = 1
@@ -3904,8 +3911,8 @@ def call(dbus=None, _c=None, _s=None, _o=None, i="", m="", p=None, inv=None):
         if m == "CursorMotion" and getattr(Pointer, "instance", False): Pointer.mouse(x=p[0], y=p[1])
         if m == "ScreenRecord": ScreenCast(audio_select=True)
         if m == "Controllers": Controllers.do()
-        if Gst and m == "Screenshot": return Screenshot.do(data=inv if inv else False)
-        if Gst and m == "ScreenshotArea": return Selector(function_data=inv if inv else False, function=Screenshot.do_pick)
+        if Gst and m == "Screenshot" and layer_shell: return Screenshot.do(data=inv if inv else False)
+        if Gst and m == "ScreenshotArea" and layer_shell: return Selector(function_data=inv if inv else False, function=Screenshot.do_pick)
         if m == "Notifications": Notifications.do()
         if m == "Exit": exit()
         if m == "Key" and getattr(Keyboard, "instance", False): Keyboard.send(key=p[0], hold=p[1], release=p[2])
@@ -3918,10 +3925,10 @@ def call(dbus=None, _c=None, _s=None, _o=None, i="", m="", p=None, inv=None):
             if item and "text/plain;charset=utf-8" in item.mimetypes:
                 v = item.mimetypes["text/plain;charset=utf-8"].decode("utf-8")
             return inv.return_value(GLib.Variant("(s)", (v,))) if inv else None
-        if m == "Apps": Apps.do()
+        if m == "Apps" and layer_shell: Apps.do()
         if m == "Player": Player.do()
         if m == "ColorScheme" and getattr(Settings, "instance", False): App.default.get_style_manager().set_color_scheme(Adw.ColorScheme.FORCE_DARK if App.default.get_style_manager().get_color_scheme() == Adw.ColorScheme.FORCE_LIGHT else Adw.ColorScheme.FORCE_LIGHT)
-        if Gst and m == "Palette" and hasattr(ImageCopy, "manager"): Palette.do()
+        if Gst and m == "Palette" and hasattr(ImageCopy, "manager") and layer_shell: Palette.do()
         return inv.return_value(None) if inv else None
     if i == NF_ID:
         if m == "CloseNotification": return inv.return_value(None) if inv else None
@@ -3987,7 +3994,7 @@ def call(dbus=None, _c=None, _s=None, _o=None, i="", m="", p=None, inv=None):
     if Gst and m == "Screenshot":
         if p[-1].get("interactive", False): return Selector(function_data=inv if inv else False, function=Screenshot.do_pick)
         else: return Screenshot.do(data=inv)
-    if Gst and m == "PickColor": return Selector(function_data=inv if inv else False, function=Palette.do_pick, single_pixel=True)
+    if Gst and m == "PickColor" and layer_shell: return Selector(function_data=inv if inv else False, function=Palette.do_pick, single_pixel=True)
     if AUTHENTICATION_AGENT:
         if m == "BeginAuthentication": return Authorize(inv, p)
         if m == "CancelAuthentication":
@@ -4313,7 +4320,6 @@ def main():
     if Data.setting("Wayland Client", True): Wayland()
     if Data.setting("Player Agent", True) and SESSION: Player()
     if Data.setting("Notifications Agent", True): Notifications()
-    if Data.setting("Apps", True): Apps()
     if GLib.getenv("DUALSHOCK") == "4": Controllers()
     App.default.main(css=APP_CSS)
 
