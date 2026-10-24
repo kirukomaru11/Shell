@@ -19,7 +19,8 @@ except ModuleNotFoundError:
         from .Utils import *
     except ModuleNotFoundError:
         print("No Utils")
-        exit()
+        import sys
+        sys.exit()
 
 if FLATPAK_ID:
     GLib.old_spawn_command_line_sync = GLib.spawn_command_line_sync
