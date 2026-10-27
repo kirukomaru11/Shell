@@ -38,6 +38,7 @@ if FLATPAK_ID:
 
 from io import FileIO
 from re import compile as Regex
+from time import sleep
 from json import loads as json, dumps as json_string
 from string import ascii_uppercase
 from select import select
@@ -780,7 +781,7 @@ class Controller(GObject.Object):
                 return
             rate = "48000"
             channels = "2"
-            self.audio_id = GLib.spawn_command_line_sync(f'pactl load-module module-null-sink sink_name="{self.sink_name}" rate="{rate}" channels="{channels}" sink_properties="device.description=\'DualShock\\ 4\'"')[1].decode("utf-8").split("\n")[0]
+            self.audio_id = GLib.spawn_command_line_sync(f'pactl load-module module-null-sink sink_name="{self.sink_name}" rate="{rate}" channels="{channels}" sink_properties="device.description=\'DualShock\\ 4\'"')[1].decode().split("\n")[0]
             self.audio_pipeline = Gst.parse_bin_from_description(f'pulsesrc device="{self.sink_name}.monitor" ! sbcenc ! audio/x-sbc,channels={channels},rate={rate},channel-mode={"stereo" if channels == "2" else "mono"},blocks=16,subbands=8,bitpool=30 ! queue ! appsink async=false sync=false emit-signals=true name=Sink')
             self.audio_pipeline.get_by_name("Sink").connect("new-sample", self.__class__.new_sample, self)
             self.audio_pipeline.set_state(Gst.State.PLAYING)
@@ -1194,7 +1195,7 @@ class Controllers(Window):
 
     def start(self):
         try:
-            previous = GLib.spawn_command_line_sync("pactl list short")[1].decode("utf-8").split("\n")
+            previous = GLib.spawn_command_line_sync("pactl list short")[1].decode().split("\n")
             for i in previous:
                 if "sink_name=shell-ds4" in i:
                     _id = i.split("\t", 1)[0]
@@ -1206,7 +1207,7 @@ class Controllers(Window):
         self.monitor.connect("changed", self.__class__.changed, self)
 
     def try_hidraw(self, device):
-        info = GLib.spawn_command_line_sync(f"udevadm info -t -q all -n {device}")[1].decode("utf-8")
+        info = GLib.spawn_command_line_sync(f"udevadm info -t -q all -n {device}")[1].decode()
         name = info.split("HID_NAME=", 1)[-1].split("\n", 1)[0]
         if name in ("Wireless Controller",): Controller(device, info, "bluetooth")
         elif name in ("Sony Computer Entertainment Wireless Controller", "Sony Interactive Entertainment Wireless Controller"): Controller(device, info, "usb")
@@ -1847,15 +1848,27 @@ class ClipboardData(ListObject):
         self.__class__.list.prepend(self)
         if len(self.__class__.list) > 30: self.__class__.list.remove(31)
 
+    def set(self):
+        m = self.mimetypes
+        self.mimetypes = None
+        self.__class__.list.remove(self)
+        Clipboard.set(m)
+
     def remove(self):
         self.mimetypes = None
         self.__class__.list.remove(self)
+        if self.__class__.list[0]: self.__class__.list[0].set()
 
     @staticmethod
     def remove_all(*_):
-        for i in ClipboardData.list:
-            i.mimetypes = None
-        ClipboardData.list.replace()
+        l = [i for i in ClipboardData.list]
+        if getattr(Clipboard, "instance", False) and Clipboard.instance.masonry:
+            for i in [i for i in Clipboard.instance.masonry]:
+                if i.get_mapped():
+                    i.data.mimetypes = None
+                    if i.data in l: l.remove(i.data)
+                    Clipboard.instance.masonry.remove(i)
+        Task.invoke(ClipboardData.list.replace, l)
 
     def save(self):
         l = [Gio.content_type_get_description(Gio.content_type_from_mime_type(i.rsplit(";charset", 1)[0])) for i in self.mimetypes]
@@ -1887,25 +1900,31 @@ class ClipboardData(ListObject):
     @staticmethod
     def items_changed(*_):
         if not getattr(Clipboard, "instance", False): return
+        Task.invoke(ClipboardData.do_items_change)
+
+    def do_items_change():
         s = (Clipboard.instance.search or "").lower()
         l = []
         for i in ClipboardData.list:
             if not s or s in i.get_search_term(): l.append(i)
-        for i in Clipboard.instance.masonry.children:
+        for i in [i for i in Clipboard.instance.masonry]:
             if not i.data or not i.data in ClipboardData.list:
                 i.data = None
-                Task.invoke(Clipboard.instance.masonry.remove, i)
-            else: Task.invoke(i.set_visible, False)
+                Clipboard.instance.masonry.remove(i)
+            else: i.set_visible(False)
         if Clipboard.instance.get_mapped():
             for i in l:
                 existing = next((it for it in Clipboard.instance.masonry if it.data == i), False)
-                if existing: Task.invoke(existing.set_visible, True)
-                else: Task.invoke(Clipboard.instance.masonry.prepend, ClipboardItem(i))
-            Task.invoke(Clipboard.instance.do_status)
+                if existing: existing.set_visible(True)
+                else: Clipboard.instance.masonry.prepend(ClipboardItem(i))
+            Clipboard.instance.do_status()
 
     def do_paintable(self):
         if self.paintable: return
-        self.paintable = MediaStream(data=self.mimetypes["image/png"])
+        try:
+            self.paintable = MediaStream(data=self.mimetypes["image/png"])
+        except:
+            self.paintable = Gtk.IconPaintable.new_for_file(Gtk.IconTheme.get_for_display(Gdk.Display.get_default()).lookup_icon("image-missing", None, -1, 1, Gtk.TextDirection.NONE, Gtk.IconLookupFlags.FORCE_SYMBOLIC).get_file(), 1, 1)
         if getattr(Clipboard, "instance", False): Task.invoke(Clipboard.instance.masonry.check_layout)
 
 ClipboardData.list = List(ClipboardData, list=True)
@@ -1947,9 +1966,9 @@ class ClipboardItem(Gtk.Overlay):
             widget = Gtk.Picture(content_fit=Gtk.ContentFit.COVER)
             classes.append("image")
             self.data.bind_property("paintable", widget, "paintable", DEFAULT_BIND)
-            Task(self.data.do_paintable).start()
+            if not self.data.paintable: Task(self.data.do_paintable).start()
         elif "text/plain;charset=utf-8" in self.data.mimetypes:
-            t = self.data.mimetypes["text/plain;charset=utf-8"].decode("utf-8")
+            t = self.data.mimetypes["text/plain;charset=utf-8"].decode()
             c = []
             if HAS_COLOR.search(t):
                 for i in COLOR.findall(t):
@@ -1996,8 +2015,7 @@ class ClipboardItem(Gtk.Overlay):
 
 class Clipboard(Window):
     __gtype_name__ = "Clipboard"
-    owning = False
-
+    list = []
     masonry = GObject.Property(type=Masonry)
     empty = GObject.Property(type=Adw.StatusPage)
     no_results = GObject.Property(type=Adw.StatusPage)
@@ -2024,7 +2042,6 @@ class Clipboard(Window):
             self.__class__.data_control_device.dispatcher(self.__class__.data_control_device_dispatcher)
         else: return
         super().__init__()
-        self.__class__.read, self.__class__.write = pipe()
         self.__class__.instance = self
         self.masonry = Masonry()
         overlay = Gtk.Overlay(child=self.masonry)
@@ -2047,6 +2064,9 @@ class Clipboard(Window):
         self.add_action(Gio.SimpleAction.new_stateful("search", None, get_variant(False)))
         self.lookup_action("search").bind_property("state", search_bar, "search-mode-enabled", SYNC_BIND, unpack_bind, variant_bind)
         App.default.set_accels_for_action("win.search", ["<primary>f"])
+        Clipboard.data_control_device.set_selection(None)
+        Clipboard.data_control_device.set_primary_selection(None)
+        Gdk.Display.get_default().sync()
 
     def do_status(self):
         self.empty.set_visible(not self.search and len(ClipboardData.list) == 0)
@@ -2073,7 +2093,7 @@ class Clipboard(Window):
             if w and w.get_ancestor(Gtk.ColorDialogButton): w.get_ancestor(Gtk.ColorDialogButton).set_rgba(v)
             else: self.set(v.to_string())
         elif isinstance(v, Gdk.Texture): self.set({"image/png": v.save_to_png_bytes().get_data()})
-        elif isinstance(v, Gdk.FileList): self.set({"text/uri-list": "\n".join(tuple(i.get_uri() for i in v)).encode("utf-8")})
+        elif isinstance(v, Gdk.FileList): self.set({"text/uri-list": "\n".join(tuple(i.get_uri() for i in v)).encode()})
         else: self.set(v)
         return True
 
@@ -2091,7 +2111,7 @@ class Clipboard(Window):
                 o = ow.get_ancestor(Gtk.ColorDialogButton)
             if "color" in css:
                 color = o.get_rgba() if hasattr(o, "get_rgba") else o.get_child().get_rgba()
-                a, c = Gdk.DragAction.COPY, Gdk.ContentProvider.new_union([Gdk.ContentProvider.new_for_bytes("text/plain;charset=utf-8", GLib.Bytes.new(color.to_string().encode("utf-8"))), Gdk.ContentProvider.new_for_value(color)])
+                a, c = Gdk.DragAction.COPY, Gdk.ContentProvider.new_union([Gdk.ContentProvider.new_for_bytes("text/plain;charset=utf-8", GLib.Bytes.new(color.to_string().encode())), Gdk.ContentProvider.new_for_value(color)])
             if "text" in css and "text/plain;charset=utf-8" in o.data.mimetypes:
                 text = GLib.Bytes.new(o.data.mimetypes["text/plain;charset=utf-8"])
                 e.v.append(o.data.mimetypes["text/plain;charset=utf-8"].decode())
@@ -2162,14 +2182,12 @@ class Clipboard(Window):
             if b and b.get_tooltip_text() in ("Save", "Remove"): return
             if isinstance(b, Gtk.ColorDialogButton):
                 if bn == 3:
-                    i,data.remove()
-                    Task.invoke(Clipboard.set, Palette.get_hex(b.get_rgba()) if Gdk.ModifierType.SHIFT_MASK in e.get_current_event_state() else b.get_rgba().to_string())
-                    if Gdk.ModifierType.SHIFT_MASK in e.get_current_event_state(): Toast("Copied HEX", timeout=2)
-            elif bn == 1:
-                if i != self.masonry.children[0]:
-                    m = i.data.mimetypes
                     i.data.remove()
-                    Task.invoke(Clipboard.set, m)
+                    Task.invoke(Clipboard.set, Palette.get_hex(b.get_rgba()) if Gdk.ModifierType.SHIFT_MASK in e.get_current_event_state() else b.get_rgba().to_string())
+                    if Gdk.ModifierType.SHIFT_MASK in e.get_current_event_state(): Task.invoke(Toast, "Copied HEX", timeout=2)
+            elif bn == 1:
+                if signal != "released": return
+                if i != self.masonry.children[0]: Task.invoke(i.data.set)
 
     @staticmethod
     def on_key_pressed(e, v, c, s):
@@ -2180,65 +2198,80 @@ class Clipboard(Window):
 
     @staticmethod
     def set(content):
-        Clipboard.owning = True
         if isinstance(content, dict):
             mimetypes = content
+        elif content:
+            mimetypes = {"text/plain;charset=utf-8": content.encode()}
         else:
-            mimetypes= {"text/plain;charset=utf-8": content.encode()}
+            mimetypes = {}
+        if mimetypes and not any(mimetypes.values()):
+            mimetypes = {}
+        if mimetypes and not (getattr(Clipboard, "instance", False) and Clipboard.instance.pause):
+            e = next((i for i in ClipboardData.list if i.mimetypes and i.mimetypes == mimetypes), False)
+            if e: return Task.invoke(e.set)
+            e = ClipboardData.list[0]
+            if "image/png" in mimetypes:
+                if not Gst.is_initialized(): Gst.init()
+                if not b"END" in mimetypes["image/png"][-50:]:
+                    if e and e.mimetypes and mimetypes["image/png"][:100] == e.mimetypes.get("image/png", b"")[:100]: return Task.invoke(e.set)
+                    return
+            ClipboardData(mimetypes)
         if getattr(Clipboard, "data_control_manager", False):
-            source = Clipboard.data_control_manager.create_data_source()
-            source.mimetypes = mimetypes
-            source.dispatcher(Clipboard.data_control_source_dispatcher)
-            for i in mimetypes: source.offer(i)
+            if mimetypes:
+                source = Clipboard.data_control_manager.create_data_source()
+                source.mimetypes = mimetypes
+                source.dispatcher(Clipboard.data_control_source_dispatcher)
+                for i in mimetypes: source.offer(i)
+                source.offer("x-wm-shell/clipboard")
+            else:
+                source = None
             Clipboard.data_control_device.set_selection(source)
             Gdk.Display.get_default().sync()
-            Task.invoke(Gdk.Display.get_default().sync)
-        if not (getattr(Clipboard, "instance", False) and Clipboard.instance.pause): ClipboardData(mimetypes)
-        Clipboard.owning = False
 
     @staticmethod
-    def do_selection(offer):
+    def do_read(offer):
         mimetypes = getattr(offer, "mimetypes", set())
+        original = mimetypes.copy()
         if hasattr(offer, "mimetypes"): del offer.mimetypes
         if "image/png" in mimetypes:
             mimetypes = ["image/png"]
-        t = "application/vnd.portal.filetransfer" in mimetypes
         for i in ("application/vnd.portal.filetransfer", "application/vnd.portal.files"):
             if i in mimetypes: mimetypes.remove(i)
         if "text/plain;charset=utf-8" in mimetypes:
             for i in [i for i in mimetypes if i.startswith("text/") and not i == "text/plain;charset=utf-8"]: mimetypes.remove(i)
-            for i in ("UTF8_STRING", "STRING", "TEXT", "COMPOUND_TEXT"):
+            for i in ("UTF8_STRING", "STRING", "TEXT", "COMPOUND_TEXT", "SAVE_TARGETS"):
                 if i in mimetypes: mimetypes.remove(i)
         data = {}
+        r, w = pipe()
         for i in mimetypes:
-            if not Clipboard.owning: continue
             chunks = []
-            set_blocking(Clipboard.read, True)
-            offer.receive(i, Clipboard.write)
-            ready, _, _ = select([Clipboard.read], [], [], 1)
-            if ready:
-                set_blocking(Clipboard.read, False)
+            set_blocking(r, True)
+            offer.receive(i, w)
+            if select([r], [], [], 3)[0]:
+                set_blocking(r, False)
                 while True:
-                    if not Clipboard.owning: break
                     try:
-                        d = read(Clipboard.read, 1024)
+                        d = read(r, 1024)
                         if not d: break
                         chunks.append(d)
                     except: break
             else: continue
             data[i] = b"".join(chunks)
-        if t and "text/plain;charset=utf-8" in data and not "text/uri-list" in data:
+        for i in (r, w): close(i)
+        if "application/vnd.portal.filetransfer" in original and "text/plain;charset=utf-8" in data and not "text/uri-list" in data:
             try:
                 data["text/uri-list"] = list_to_str([uri_encode(i) for i in str_to_list(data["text/plain;charset=utf-8"].decode().replace("\x00", ""))]).encode()
             except Exception as e: print(e)
-        Task.invoke(Clipboard.set, data)
+        if offer in Clipboard.list:
+            if offer != Clipboard.list[-1]: return
+            if data and any(data.values()): Clipboard.set(data)
+            Clipboard.list.remove(offer)
 
     @staticmethod
     def data_control_source_dispatcher(proxy, event, args):
         if event == "send":
             mime, fd = args
-            try:
-                if hasattr(proxy, "mimetypes") and mime in proxy.mimetypes: write(fd, proxy.mimetypes[mime])
+            try: write(fd, getattr(proxy, "mimetypes", {}).get(mime, b""))
             finally: close(fd)
         if event == "cancelled":
             if hasattr(proxy, "mimetypes"): del proxy.mimetypes
@@ -2246,23 +2279,19 @@ class Clipboard(Window):
 
     @staticmethod
     def data_control_device_dispatcher(proxy, event, args):
-        if Clipboard.owning or Clipboard.instance.pause: return
-        if event == "data_offer":
-            args[0].dispatcher(Clipboard.data_control_offer_dispatcher)
+        if event == "data_offer": args[0].dispatcher(Clipboard.data_control_offer_dispatcher)
         if event == "selection":
-            o = args[0]
-            if o:
-                Clipboard.owning = True
-                Task(Clipboard.do_selection, o).start()
-            elif not o:
-                Clipboard.owning = False
-        if event == "primary_selection":
-            Clipboard.data_control_device.set_primary_selection(None)
-            Gdk.Display.get_default().flush()
+            if getattr(args[0], "mimetypes", False):
+                if "x-wm-shell/clipboard" in args[0].mimetypes:
+                    del args[0].mimetypes
+                    return
+                Clipboard.list.append(args[0])
+                GLib.timeout_add(max(0, (len(Clipboard.list) - 1) * 10), Task(Clipboard.do_read, args[0]).start)
+        if event == "primary_selection" and args[0]: Task.invoke(Clipboard.data_control_device.set_primary_selection, None)
 
     @staticmethod
     def data_control_offer_dispatcher(proxy, event, args):
-        if event == "offer" and not Clipboard.owning:
+        if event == "offer":
             if not hasattr(proxy, "mimetypes"):
                 proxy.mimetypes = set()
             proxy.mimetypes.add(args[0])
@@ -2878,12 +2907,12 @@ class Authorize(EntryPrompt):
     def communicate(channel, condition, self):
         if not self.invocation: return
         if channel == self.stdin_channel:
-            channel.write_chars(self.get_extra_child().get_text().encode("utf-8"), -1)
+            channel.write_chars(self.get_extra_child().get_text().encode(), -1)
             channel.flush()
-            channel.write_chars("\n".encode("utf-8"), -1)
+            channel.write_chars("\n".encode(), -1)
             channel.flush()
         elif channel == self.stdout_channel:
-            message = channel.read_to_end()[-1].decode("utf-8")
+            message = channel.read_to_end()[-1].decode()
             if "SUCCESS" in message: self.finish()
             if "FAILURE" in message:
                 self.get_extra_child().set_text("")
@@ -2904,7 +2933,7 @@ class PortalFileDialog(FileDialog):
     def __init__(self, invocation=None, operation="SaveFile", args=False):
         v = args[-1].get("current_folder", None)
         if v:
-            v = Gio.File.new_for_path(bytes(v).rstrip(b"\x00").decode("utf-8"))
+            v = Gio.File.new_for_path(bytes(v).rstrip(b"\x00").decode())
         filters = args[-1].get("filters", None) or None
         default_filter = args[-1].get("current_filter", None)
         if default_filter:
@@ -2934,7 +2963,7 @@ class PortalFileDialog(FileDialog):
                 if type(v) == str: m.append_submenu(i[1], Menu(dict((it[1], f"win.{i[0]}::{it[0]}") for it in i[2])))
                 else: m.append(i[1], f"win.{i[0]}")
         self.invocation = invocation
-        self.files = [bytes(i).rstrip(b"\x00").decode("utf-8") for i in self.args[-1].get("files", [])]
+        self.files = [bytes(i).rstrip(b"\x00").decode() for i in self.args[-1].get("files", [])]
         if operation == "OpenFile":
             if self.args[-1].get("directory", False):
                 if self.multiple: self.select_multiple_folders(callback=self.__class__.do, user_data=operation)
@@ -3022,7 +3051,7 @@ class Niri:
             s = Path(ROOT, s)
         address = Gio.UnixSocketAddress.new(s)
         connection = Gio.SocketClient().connect(address)
-        connection.get_output_stream().write_all("\"EventStream\"\n".encode("utf-8"))
+        connection.get_output_stream().write_all("\"EventStream\"\n".encode())
         connection.get_output_stream().close()
         reader = Gio.DataInputStream.new(connection.get_input_stream())
         reader.read_line_async(GLib.PRIORITY_DEFAULT, None, self.read_line_async)
@@ -3031,7 +3060,7 @@ class Niri:
 
     @staticmethod
     def request(r, args={}):
-        Niri.connection.get_output_stream().write_all(((json_string({r: args}) if r == "Action" else f'"{r}"') + "\n").encode("utf-8"), None)
+        Niri.connection.get_output_stream().write_all(((json_string({r: args}) if r == "Action" else f'"{r}"') + "\n").encode(), None)
         Niri.connection.get_output_stream().flush()
         return Niri.reader.read_line_utf8()[0]
 
@@ -3056,7 +3085,7 @@ class Wayfire:
     def __init__(self):
         super().__init__()
         self.__class__.connection = connection = Gio.SocketClient().connect(Gio.UnixSocketAddress.new(GLib.getenv("WAYFIRE_SOCKET")))
-        data = '{"method": "window-rules/events/watch", "data": {"events": ["plugin-activation-state-changed"]}}'.encode("utf-8")
+        data = '{"method": "window-rules/events/watch", "data": {"events": ["plugin-activation-state-changed"]}}'.encode()
         connection.get_output_stream().write(len(data).to_bytes(4, byteorder="little"))
         connection.get_output_stream().write(data)
         connection.get_output_stream().close()
@@ -3069,7 +3098,7 @@ class Wayfire:
 
     @staticmethod
     def read(a=None, r=None):
-        message = a.read_bytes_finish(r).get_data().decode("utf-8") if a and r else ""
+        message = a.read_bytes_finish(r).get_data().decode() if a and r else ""
         if "event" in message and '"plugin":"scale"' in message:
             WM.is_overview = '"state":true' in message
         Wayfire.connection.get_input_stream().read_bytes_async(4, GLib.PRIORITY_LOW, None, Wayfire.do_get_number)
@@ -3927,7 +3956,7 @@ def call(dbus=None, _c=None, _s=None, _o=None, i="", m="", p=None, inv=None):
             v = ""
             item = ClipboardData.list[0]
             if item and "text/plain;charset=utf-8" in item.mimetypes:
-                v = item.mimetypes["text/plain;charset=utf-8"].decode("utf-8")
+                v = item.mimetypes["text/plain;charset=utf-8"].decode()
             return inv.return_value(GLib.Variant("(s)", (v,))) if inv else None
         if m == "Apps" and layer_shell: Apps.do()
         if m == "Player": Player.do()
@@ -4294,6 +4323,19 @@ Graphene.Rect.init(rec, 0, 0, 1, 1)
 snapshot.append_color(RGBA("#00000000"), rec)
 EMPTY_PAINTABLE = snapshot.to_paintable()
 
+def test():
+    return
+    for n in range(3):
+        print(n + 1)
+        sleep(1)
+    print("starting")
+    Clipboard.do()
+    for n in range(60):
+        Clipboard.set("test " + str(n + 1))
+        print(n + 1)
+        sleep(0.8)
+    print("done")
+
 def main():
     if Data.setting("Portals", True):
         Settings()
@@ -4325,6 +4367,7 @@ def main():
     if Data.setting("Player Agent", True) and SESSION: Player()
     if Data.setting("Notifications Agent", True): Notifications()
     if GLib.getenv("DUALSHOCK") == "4": Controllers()
+    Task(test).start()
     App.default.main(css=APP_CSS)
 
 if __name__ == "__main__": main()
