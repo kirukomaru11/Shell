@@ -4047,7 +4047,6 @@ class Settings(Window):
     reduced_motion = GObject.Property(type=bool, default=False)
 
     polkit_agent = GObject.Property(type=bool, default=True)
-    controllers_agent = GObject.Property(type=bool, default=True)
     notifications_agent = GObject.Property(type=bool, default=True)
     player_agent = GObject.Property(type=bool, default=True)
 
@@ -4055,12 +4054,14 @@ class Settings(Window):
     wallpaper = GObject.Property(type=bool, default=True)
     background = GObject.Property(type=bool, default=True)
     clipboard = GObject.Property(type=bool, default=True)
-    portals = GObject.Property(type=bool, default=True)
     dbus = GObject.Property(nick="DBUS", type=bool, default=True)
     wayland_client = GObject.Property(type=bool, default=True)
     virtual_keyboard = GObject.Property(type=bool, default=True)
     virtual_pointer = GObject.Property(type=bool, default=True)
     primary_selection = GObject.Property(type=bool, default=False)
+
+    controllers_agent = GObject.Property(type=bool, default=True)
+    portals = GObject.Property(type=bool, default=True)
 
     disable_printing = GObject.Property(type=bool, default=True)
     disable_save_to_disk = GObject.Property(type=bool, default=False)
@@ -4083,8 +4084,8 @@ class Settings(Window):
             "Lockdown": ["disable_printing", "disable_save_to_disk", "disable_application_handlers", "disable_location", "disable_camera", "disable_microphone", "disable_sound_output"]
         },
         "Advanced": {
-            "Agents": ["polkit_agent", "controllers_agent", "notifications_agent", "player_agent"],
-            "Features": ["apps", "wallpaper", "background", "clipboard", "portals", "dbus", "wayland_client"],
+            "Agents": ["polkit_agent", "notifications_agent", "player_agent"],
+            "Features": ["apps", "wallpaper", "background", "clipboard", "dbus", "wayland_client"],
             "Input": ["virtual_keyboard", "virtual_pointer", "primary_selection"],
             }
         }
@@ -4094,15 +4095,11 @@ class Settings(Window):
         Settings = self
         stack = Adw.ViewStack()
         self.set_visible_child_name = stack.set_visible_child_name
-        toolbar = Adw.ToolbarView(content=stack)
-        header = Adw.HeaderBar()
-        toolbar.add_top_bar(header)
         toolbar2 = Adw.ToolbarView(content=Adw.ViewSwitcherSidebar(stack=stack))
         header2 = Adw.HeaderBar()
         header2.pack_end(Button(t=Gtk.MenuButton, menu_model=App.default.default_menu, icon_name="open-menu", tooltip_text="Menu"))
         toolbar2.add_top_bar(header2)
-        view = Adw.OverlaySplitView(content=Adw.NavigationPage(title="Content", child=toolbar), sidebar=Adw.NavigationPage(title="Settings", child=toolbar2))
-        header.pack_start(Button(t=Gtk.ToggleButton, icon_name="sidebar-show", tooltip_text="Sidebar", bindings=[(view, "show-sidebar", None, "active", SYNC_BIND)]))
+        view = Adw.OverlaySplitView(content=Adw.NavigationPage(title="Content", child=stack), sidebar=Adw.NavigationPage(title="Settings", child=toolbar2))
         navigation = Adw.NavigationView()
         navigation.add(Adw.NavigationPage(title="Settings", child=view))
         super().__init__(content=navigation)
@@ -4111,19 +4108,30 @@ class Settings(Window):
         self.breakpoint.add_setter(view, "collapsed", True)
         self.add_breakpoint(self.breakpoint)
         for page, groups in self.__class__.pages.items():
+            toolbar = Adw.ToolbarView()
+            header = Adw.HeaderBar()
+            toolbar.add_top_bar(header)
+            header.pack_start(Button(t=Gtk.ToggleButton, icon_name="sidebar-show", tooltip_text="Sidebar", bindings=[(view, "show-sidebar", None, "active", SYNC_BIND)]))
             if page == "Controllers":
-                if Data.setting("Controllers Agent", True):
-                    status = Adw.StatusPage(title="No Controllers", icon_name="input-gaming-symbolic")
-                    Controller.list.bind_property("n-items", status, "visible", DEFAULT_BIND, invert_bool_bind)
-                    v = Gtk.ListView(model=Gtk.NoSelection(model=Controller.list), factory=ControllerItem.factory)
-                    v.set_css_classes([])
-                    overlay = Gtk.Overlay(child=Gtk.ScrolledWindow(child=v))
-                    overlay.add_overlay(status)
-                    overlay.add_css_class("controllers")
-                    stack.add_titled(overlay, page, page)
-                    Task.invoke(self.__class__.start_controllers)
-                continue
-            p = GroupsPage()
+                self.controllers_agent = Data.setting("Controllers Agent", True)
+                status = Adw.StatusPage(title="No Controllers", icon_name="input-gaming-symbolic")
+                Controller.list.bind_property("n-items", status, "visible", DEFAULT_BIND, invert_bool_bind)
+                v = Gtk.ListView(model=Gtk.NoSelection(model=Controller.list), factory=ControllerItem.factory)
+                v.set_css_classes([])
+                p = Gtk.Overlay(child=Gtk.ScrolledWindow(child=v))
+                p.add_overlay(status)
+                p.add_css_class("controllers")
+                if self.controllers_agent: Task.invoke(self.__class__.start_controllers)
+                s = Gtk.Switch()
+                self.bind_property("controllers-agent", s, "active", SYNC_BIND)
+                header.pack_end(s)
+            else:
+                p = GroupsPage()
+            toolbar.set_content(p)
+            if page == "Desktop Portal":
+                s = Gtk.Switch()
+                self.bind_property("portals", s, "active", SYNC_BIND)
+                header.pack_end(s)
             if page == "User":
                 self.avatar = Adw.Avatar(show_initials=True, size=192)
                 o = Gtk.Overlay(child=self.avatar, halign=Gtk.Align.CENTER)
@@ -4140,9 +4148,7 @@ class Settings(Window):
                 self.bind_property("user-name", r, "text", SYNC_BIND)
                 r.bind_property("text", self.avatar, "text", DEFAULT_BIND, self.__class__.user_avatar_bind)
                 p.add(r)
-                stack.add_titled(p, page, page)
                 if self.user_avatar: PaintableTask(func=self.__class__.avatar_finish_func, uri=self.user_avatar)
-                continue
             if page == "Advanced":
                 if View and GLib.getenv("NIRI_CONFIG"):
                     r = Button(callback=self.__class__.do_niri_config, t=Adw.ButtonRow, title="Niri Config")
@@ -4152,7 +4158,7 @@ class Settings(Window):
                     r = Button(callback=self.__class__.do_wayfire_config, t=Adw.ButtonRow, title="Wayfire Config")
                     p.add(r)
                     p.get_group(0).set_title("Configs")
-            for k, v in groups.items():
+            for k, v in (groups.items() if groups else {}):
                 g = Adw.PreferencesGroup(title=k)
                 p.add(g)
                 for i in v:
@@ -4212,7 +4218,7 @@ class Settings(Window):
                     r.set_title(title)
                     p.add(r)
                     self.connect(f"notify::{i.replace('_', '-')}", self.__class__.do_changed)
-            stack.add_titled(p, page, page)
+            stack.add_titled(toolbar, page, page)
         stack.bind_property("visible-child-name", view.get_content(), "title", DEFAULT_BIND)
 
         self.__class__.instance = self
@@ -4575,7 +4581,7 @@ def call(dbus=None, _c=None, _s=None, _o=None, i="", m="", p=None, inv=None):
         if p[1] == "SupportedOptions":
             v = {}
         if i.endswith("Lockdown"):
-            v = getattr(Settings, i.replace("-", "_"), True)
+            v = getattr(Settings, p[1].replace("-", "_"), True)
         if p[1] == "version":
             v = 0
             if i.endswith("ScreenCast"):
@@ -4701,7 +4707,7 @@ keyboard .key#Esc label { transform: scale(1.25); }
 .notifications notification:hover .close,
 .notifications notification:focus-within .close { opacity: 1; }
 
-.controllers listview { background: none; border-spacing: 6px; padding: 0px 6px 6px 6px; }
+.controllers listview { background: none; border-spacing: 22px; padding: 0px 22px 22px 22px; }
 
 .settings .avatar-edit { margin: 10px; backdrop-filter: blur(20px) brightness(0.9); color: white; }
 """
