@@ -4586,14 +4586,10 @@ def call(dbus=None, _c=None, _s=None, _o=None, i="", m="", p=None, inv=None):
             v = 0
             if i.endswith("ScreenCast"):
                 v = 5 if hasattr(Niri, "connection") else 6
-            elif i.endswith("FileChooser"):
-                v = 4
-            elif i.endswith(("AppChooser", "Settings", "Notification")):
+            elif i.endswith(("Settings", "Notification")):
                 v = 2
-            elif i.endswith(("Screenshot", "Inhibit")):
+            elif i.endswith("Screenshot"):
                 v = 3
-            elif i.endswith("Clipboard"):
-                v = 1
         v = GLib.Variant(dbus.interfaces[p[0]]["properties"][p[1]]["type"], v)
         if inv: return inv.return_value(GLib.Variant("(v)", (v,)))
         else: return v
