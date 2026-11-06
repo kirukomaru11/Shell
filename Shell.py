@@ -23,20 +23,30 @@ PORTAL_DBUS = {
     },
     f"{PT_ID}.AppChooser": {
         "methods": {
-          "ChooseApplication": { "handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "parent_window": { "direction": "in", "type": "s" }, "choices": { "direction": "in", "type": "as" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, "results": { "direction": "out", "type": "a{sv}" } , },
-          "UpdateChoices": { "handle": { "direction": "in", "type": "o" }, "choices": { "direction": "in", "type": "as" }, },
+            "ChooseApplication": { "handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "parent_window": { "direction": "in", "type": "s" }, "choices": { "direction": "in", "type": "as" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, "results": { "direction": "out", "type": "a{sv}" } , },
+            "UpdateChoices": { "handle": { "direction": "in", "type": "o" }, "choices": { "direction": "in", "type": "as" }, },
+        }
+     },
+    f"{PT_ID}.DynamicLauncher": {
+        "methods": {
+            "PrepareInstall": { "handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "parent_window": { "direction": "in", "type": "s" }, "name": { "direction": "in", "type": "s" }, "icon_v": { "direction": "in", "type": "v" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, "results": { "direction": "out", "type": "a{sv}" }, },
+            "RequestInstallToken": { "app_id": { "direction": "in", "type": "s" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, },
+        },
+        "properties": {
+            "SupportedLauncherTypes": { "type": "u", "access": "read" },
+            "version": { "type": "u", "access": "read" },
         }
      },
     f"{PT_ID}.Email": {
         "methods": {
-          "ComposeEmail": { "handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "parent_window": { "direction": "in", "type": "s" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, "results": { "direction": "out", "type": "a{sv}" }, },
+            "ComposeEmail": { "handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "parent_window": { "direction": "in", "type": "s" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, "results": { "direction": "out", "type": "a{sv}" }, },
         }
      },
     f"{PT_ID}.FileChooser": {
         "methods": {
-          "OpenFile": { "handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "parent_window": { "direction": "in", "type": "s" }, "title": { "direction": "in", "type": "s" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, "results": { "direction": "out", "type": "a{sv}" }, },
-          "SaveFile": { "handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "parent_window": { "direction": "in", "type": "s" }, "title": { "direction": "in", "type": "s" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, "results": { "direction": "out", "type": "a{sv}" }, },
-          "SaveFiles": { "handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "parent_window": { "direction": "in", "type": "s" }, "title": { "direction": "in", "type": "s" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, "results": { "direction": "out", "type": "a{sv}" }, }
+            "OpenFile": { "handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "parent_window": { "direction": "in", "type": "s" }, "title": { "direction": "in", "type": "s" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, "results": { "direction": "out", "type": "a{sv}" }, },
+            "SaveFile": { "handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "parent_window": { "direction": "in", "type": "s" }, "title": { "direction": "in", "type": "s" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, "results": { "direction": "out", "type": "a{sv}" }, },
+            "SaveFiles": { "handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "parent_window": { "direction": "in", "type": "s" }, "title": { "direction": "in", "type": "s" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, "results": { "direction": "out", "type": "a{sv}" }, }
         }
      },
     f"{PT_ID}.Lockdown": {
@@ -52,8 +62,8 @@ PORTAL_DBUS = {
      },
     f"{PT_ID}.Notification": {
         "methods": {
-          "AddNotification": { "app_id": { "direction": "in", "type": "s" }, "id": { "direction": "in", "type": "s" }, "notification": { "direction": "in", "type": "a{sv}" }, },
-          "RemoveNotification": { "app_id": { "direction": "in", "type": "s" }, "id": { "direction": "in", "type": "s" }, },
+            "AddNotification": { "app_id": { "direction": "in", "type": "s" }, "id": { "direction": "in", "type": "s" }, "notification": { "direction": "in", "type": "a{sv}" }, },
+            "RemoveNotification": { "app_id": { "direction": "in", "type": "s" }, "id": { "direction": "in", "type": "s" }, },
         },
         "signals": { "ActionInvoked": { "app_id": "s", "id": "s", "action": "s", "parameter": "av" } },
         "properties": {
@@ -63,9 +73,9 @@ PORTAL_DBUS = {
      },
     f"{PT_ID}.ScreenCast": {
         "methods": {
-          "CreateSession": { "handle": { "direction": "in", "type": "o" }, "session_handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, "results": { "direction": "out", "type": "a{sv}" } , },
-          "SelectSources": { "handle": { "direction": "in", "type": "o" }, "session_handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, "results": { "direction": "out", "type": "a{sv}" } , },
-          "Start": { "handle": { "direction": "in", "type": "o" }, "session_handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "parent_window": { "direction": "in", "type": "s" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, "results": { "direction": "out", "type": "a{sv}" } , },
+            "CreateSession": { "handle": { "direction": "in", "type": "o" }, "session_handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, "results": { "direction": "out", "type": "a{sv}" } , },
+            "SelectSources": { "handle": { "direction": "in", "type": "o" }, "session_handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, "results": { "direction": "out", "type": "a{sv}" } , },
+            "Start": { "handle": { "direction": "in", "type": "o" }, "session_handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "parent_window": { "direction": "in", "type": "s" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, "results": { "direction": "out", "type": "a{sv}" } , },
         },
         "properties": {
             "version": { "type": "u", "access": "read" },
@@ -75,8 +85,8 @@ PORTAL_DBUS = {
     },
     f"{PT_ID}.Screenshot": {
         "methods": {
-          "Screenshot": { "handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "parent_window": { "direction": "in", "type": "s" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, "results": { "direction": "out", "type": "a{sv}" } , },
-          "PickColor": { "handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "parent_window": { "direction": "in", "type": "s" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, "results": { "direction": "out", "type": "a{sv}" } , },
+            "Screenshot": { "handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "parent_window": { "direction": "in", "type": "s" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, "results": { "direction": "out", "type": "a{sv}" } , },
+            "PickColor": { "handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "parent_window": { "direction": "in", "type": "s" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, "results": { "direction": "out", "type": "a{sv}" } , },
         },
         "properties": {
             "version": { "type": "u", "access": "read" },
@@ -85,8 +95,8 @@ PORTAL_DBUS = {
      },
     f"{PT_ID}.Settings": {
         "methods": {
-          "Read": { "namespace": { "direction": "in", "type": "s" }, "key": { "direction": "in", "type": "s" }, "value": { "direction": "out", "type": "v" } },
-          "ReadAll": { "namespaces": { "direction": "in", "type": "as" }, "value": { "direction": "out", "type": "a{sa{sv}}" } },
+            "Read": { "namespace": { "direction": "in", "type": "s" }, "key": { "direction": "in", "type": "s" }, "value": { "direction": "out", "type": "v" } },
+            "ReadAll": { "namespaces": { "direction": "in", "type": "as" }, "value": { "direction": "out", "type": "a{sa{sv}}" } },
         },
         "signals": { "SettingChanged": { "namespace": "s", "key": "s", "value": "v" } },
         "properties": {
@@ -95,7 +105,7 @@ PORTAL_DBUS = {
      },
     f"{PT_ID}.Wallpaper": {
         "methods": {
-          "SetWallpaperURI": { "handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "parent_window": { "direction": "in", "type": "s" }, "uri": { "direction": "in", "type": "s" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, },
+            "SetWallpaperURI": { "handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "parent_window": { "direction": "in", "type": "s" }, "uri": { "direction": "in", "type": "s" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, },
 }}}
 
 import sys
@@ -231,8 +241,7 @@ for app in ["Files", "Terminal"]:
     if app == "Terminal":
         View = getattr(Module, "View", False)
     if app == "Files":
-        FileDialog = getattr(Module, "FileDialog", Gtk.FileDialog)
-        Gtk.FileDialog = FileDialog
+        Gtk.FileDialog = getattr(Module, "FileDialog", Gtk.FileDialog)
     Module = None
 
 try:
@@ -2059,8 +2068,8 @@ class ClipboardItem(Gtk.Overlay):
                 if i.startswith("file://"):
                     f = Gio.File.new_for_uri(i)
                     image.path = f.get_path()
-                    if hasattr(FileDialog, "set_icon"):
-                        if hasattr(FileDialog, "set_icon"): FileDialog.set_icon(image, image.path)
+                    if hasattr(Gtk.FileDialog, "set_icon"):
+                        if hasattr(Gtk.FileDialog, "set_icon"): Gtk.FileDialog.set_icon(image, image.path)
                     else:
                         try:
                             info = Gio.File.new_for_path(image.path).query_info("standard::icon", Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS)
@@ -2072,7 +2081,7 @@ class ClipboardItem(Gtk.Overlay):
                 widget.append(image)
             classes.append("files")
             widget = Gtk.ScrolledWindow(child=widget)
-            if not any(isinstance(i, FileDialog) for i in Gtk.Window.list_toplevels()) and hasattr(FileDialog, "data_uninit"): Task.invoke(FileDialog.data_uninit)
+            if not any(isinstance(i, Gtk.FileDialog) for i in Gtk.Window.list_toplevels()) and hasattr(Gtk.FileDialog, "data_uninit"): Task.invoke(Gtk.FileDialog.data_uninit)
         elif "image/png" in self.data.mimetypes:
             widget = Gtk.Picture(content_fit=Gtk.ContentFit.COVER)
             classes.append("image")
@@ -2429,8 +2438,16 @@ class DesktopApp(ListObject):
             except:
                 v = None
             self.default["icon"] = self.icon = v
-            self.default["name"] = self.name = keyfile.get_value("Desktop Entry", "Name") or self.id.rsplit(".desktop", 1)[0]
-            self.default["command"] = self.command = keyfile.get_value("Desktop Entry", "Exec")
+            try:
+                v = keyfile.get_value("Desktop Entry", "Name")
+            except:
+                v = ""
+            self.default["name"] = self.name = v or self.id.rsplit(".desktop", 1)[0]
+            try:
+                v = keyfile.get_value("Desktop Entry", "Exec")
+            except:
+                v = ""
+            self.default["command"] = self.command = v
             try:
                 v = keyfile.get_value("Desktop Entry", "MimeType").strip(";").split(";")
             except:
@@ -3166,7 +3183,7 @@ class PortalFileDialog(Gtk.FileDialog):
         except Exception as e:
             print(e)
             if self.invocation: self.invocation.return_value(GLib.Variant("(ua{sv})", (1, {})))
-        if not any(i != self and isinstance(i, FileDialog) for i in Gtk.Window.list_toplevels()) and hasattr(FileDialog, "data_uninit"): FileDialog.data_uninit()
+        if not any(i != self and isinstance(i, Gtk.FileDialog) for i in Gtk.Window.list_toplevels()) and hasattr(Gtk.FileDialog, "data_uninit"): Gtk.FileDialog.data_uninit()
 
 class Niri:
     seen_sessions = []
@@ -4406,6 +4423,68 @@ class AccountPrompt(Prompt):
         else: self.invocation.return_value(GLib.Variant("(ua{sv})", (0, {"id": get_variant(GLib.getenv("USER") or "user"), "name": get_variant(Settings.user_name or GLib.getenv("USER") or "user"), "image": get_variant(Settings.user_avatar)})))
         self.invocation = None
 
+class PrepareInstallPrompt(Prompt):
+    invocation = GObject.Property(type=Gio.DBusMethodInvocation)
+    original_icon = GObject.Property(type=object)
+    install_icon = GObject.Property(type=object)
+    install_name = GObject.Property(type=str)
+    def __init__(self, inv, p):
+        handle, app_id, parent_window, name, icon, options = p
+        modal = options.get("modal", False)
+        launcher_type = options.get("launcher_type", 1)
+        launcher_type = "Application" if launcher_type == 1 else "WebApp" if launcher_type == 2 else "Unknown"
+        target = options.get("target", "")
+        editable_name = options.get("editable_name", True)
+        editable_icon = options.get("editable_icon", False)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        super().__init__(extra_child=box, callback=self.__class__.do, confirm_callback=False, heading=f"Install {launcher_type}" + (f"\n({target})" if target else ""))
+        self.add_css_class("prepare-install")
+        image = Gtk.Image(pixel_size=192)
+        self.bind_property("install_icon", image, "name", DEFAULT_BIND, self.__class__.set_icon)
+        try:
+            self.install_icon = GLib.Variant("(sv)", (icon[0], GLib.Variant("ay", icon[1])))
+        except Exception as e:
+            self.install_icon = Gio.Icon.new_for_string("image-missing-symbolic").serialize()
+        self.original_icon = self.install_icon
+        box.append(image)
+        if editable_icon or editable_name: box.append(Adw.PreferencesGroup())
+        if editable_name:
+            r = Adw.EntryRow(title="Name")
+            self.bind_property("install-name", r, "text", SYNC_BIND)
+            box.get_last_child().add(r)
+        if editable_icon: box.get_last_child().add(Button(t=Adw.ButtonRow, title="Change Icon", callback=self.__class__.change_icon))
+        self.install_name = name
+        self.invocation = inv
+        self.present()
+
+    @staticmethod
+    def change_icon(b):
+        self = b.get_ancestor(PrepareInstallPrompt)
+        if not self: return
+        Gtk.FileDialog().open(self.get_root(), None, self.__class__.do_change_icon, self)
+
+    @staticmethod
+    def do_change_icon(a, r, self):
+        try:
+            f = a.open_finish(r)
+            self.install_icon = GLib.Variant("(sv)", ("bytes", GLib.Variant("ay", get_contents(f))))
+        except:
+            self.install_icon = self.original_icon
+
+    @staticmethod
+    def set_icon(b, v):
+        image = b.get_property("target")
+        try: image.set_from_gicon(Gio.BytesIcon.deserialize(v))
+        except: image.set_from_icon_name("image-missing-symbolic")
+
+    @staticmethod
+    def do(self, r):
+        if not self.invocation: return
+        if r == self.responses[0]: self.invocation.return_value(GLib.Variant("(ua{sv})", (1, {})))
+        else: self.invocation.return_value(GLib.Variant("(ua{sv})", (0, {"name": get_variant(self.install_name), "icon": GLib.Variant("v", self.install_icon)})))
+        self.install_icon = self.invocation = None
+        self.install_name = ""
+
 def call(dbus=None, _c=None, _s=None, _o=None, i="", m="", p=None, inv=None):
     p = p or []
     if i == INFO["ID"]:
@@ -4539,6 +4618,10 @@ def call(dbus=None, _c=None, _s=None, _o=None, i="", m="", p=None, inv=None):
         c = AppChooser(function=AppChooser.close_email, uri=uri, content_type="x-scheme-handler/mailto")
         c.i = inv
         return
+    if m == "PrepareInstall":
+        PrepareInstallPrompt(inv, p)
+        return
+    if m == "RequestInstallToken": return inv.return_value(GLib.Variant("(ua{sv})", (1, {})))
     if m == "ReadAll":
         d = {}
         p = p[0]
@@ -4580,6 +4663,8 @@ def call(dbus=None, _c=None, _s=None, _o=None, i="", m="", p=None, inv=None):
             v = 2
         if p[1] == "SupportedOptions":
             v = {}
+        if p[1] == "SupportedLauncherTypes":
+            v = 1 | 2
         if i.endswith("Lockdown"):
             v = getattr(Settings, p[1].replace("-", "_"), True)
         if p[1] == "version":
@@ -4590,6 +4675,8 @@ def call(dbus=None, _c=None, _s=None, _o=None, i="", m="", p=None, inv=None):
                 v = 2
             elif i.endswith("Screenshot"):
                 v = 3
+            elif i.endswith("DynamicLauncher"):
+                v = 1
         v = GLib.Variant(dbus.interfaces[p[0]]["properties"][p[1]]["type"], v)
         if inv: return inv.return_value(GLib.Variant("(v)", (v,)))
         else: return v
@@ -4706,6 +4793,9 @@ keyboard .key#Esc label { transform: scale(1.25); }
 .controllers listview { background: none; border-spacing: 22px; padding: 0px 22px 22px 22px; }
 
 .settings .avatar-edit { margin: 10px; backdrop-filter: blur(20px) brightness(0.9); color: white; }
+
+.prepare-install .child > box { border-spacing: 10px; }
+.prepare-install .child > box > image { filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.3)); }
 """
 
 PLAYER_IFACE = INFO["ID"].replace("Shell", "Player")
