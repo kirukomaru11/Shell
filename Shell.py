@@ -70,7 +70,20 @@ PORTAL_DBUS = {
             "version": { "type": "u", "access": "read" },
             "SupportedOptions": { "type": "a{sv}", "access": "read" },
         }
-     },
+    },
+    f"{PT_ID}.Request": {
+        "methods": {
+            "Close": {},
+        },
+    },
+    f"{PT_ID}.Session": {
+        "methods": {
+            "Close": {},
+        },
+        "properties": {
+            "version": { "type": "u", "access": "read" },
+        }
+    },
     f"{PT_ID}.ScreenCast": {
         "methods": {
             "CreateSession": { "handle": { "direction": "in", "type": "o" }, "session_handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, "results": { "direction": "out", "type": "a{sv}" } , },
@@ -114,7 +127,7 @@ def install_portal():
     try:
         name = INFO["ID"].rsplit(".", 1)[-1]
         t = f"[portal]\nDBusName=org.freedesktop.impl.portal.desktop.{name}\nInterfaces="
-        t += ";".join([i for i in PORTAL_DBUS])
+        t += ";".join([i for i in PORTAL_DBUS if not i.endswith(("Request", "Session"))])
         with open((ROOT + f"/usr/share/xdg-desktop-portal/portals/{name}.portal").replace("//", "/"), "w") as f: f.write(t)
     except Exception as e: print("Couldn't install portal:", e)
 
@@ -125,7 +138,7 @@ ROOT = "/run/host/root" if environ.get("FLATPAK_ID", False) else "/"
 
 if sys.argv and sys.argv[-1] == "--install-portal":
     install_portal()
-    exit()
+    sys.exit()
 
 from struct import pack
 from ctypes import *
@@ -490,6 +503,7 @@ class LayerShell(Window):
     def get_all(): return [i for i in Gtk.Window.list_toplevels() if isinstance(i, LayerShell)]
 
 class Selector(LayerShell):
+    cancellable = GObject.Property(type=Gio.Cancellable)
     overlay = GObject.Property(type=Gtk.Overlay)
     function_data = GObject.Property(type=object)
     function = GObject.Property(type=object)
@@ -500,8 +514,10 @@ class Selector(LayerShell):
     y = GObject.Property(type=int)
     copy = GObject.Property(type=bool, default=False)
     single_pixel = GObject.Property(type=bool, default=False)
-    def __init__(self, function=None, function_data=None, single_pixel=False, copy=False):
+    def __init__(self, function=None, function_data=None, single_pixel=False, copy=False, cancellable=None):
         super().__init__(layer="OVERLAY", keyboard_mode="EXCLUSIVE")
+        self.cancellable = cancellable
+        if self.cancellable: self.cancellable.connect(self.finish)
         self.copy = copy
         self.single_pixel = single_pixel
         self.function_data = function_data
@@ -599,9 +615,10 @@ class Selector(LayerShell):
         if not self.single_pixel: return
         self.x, self.y = x, y
         self.square_width = self.square_height = 1
-        self.finish()
+        self.finish(abort=False)
 
-    def finish(self, abort=False, copy=False):
+    def finish(self, abort=True, copy=False):
+        self.cancellable = None
         if abort or not self.get_surface():
             args = False
         else:
@@ -611,6 +628,7 @@ class Selector(LayerShell):
         self.close()
         if self.function and self.function_data != None: Task.invoke(self.function, args, self.function_data)
         elif self.function: Task.invoke(self.function, args)
+        self.function = self.function_data = None
 
     @staticmethod
     def on_gesture_drag_drag_end(e, x, y):
@@ -618,12 +636,12 @@ class Selector(LayerShell):
         if self.single_pixel or not self.get_mapped(): return
         Window.reset_draw(self)
         if self.square_width == 0 and self.square_height == 0: return
-        self.finish()
+        self.finish(abort=False)
 
     @staticmethod
     def on_key_pressed(e, v, c, s):
-        if v == Gdk.KEY_Escape: e.get_widget().get_root().finish(abort=True)
-        if Gdk.ModifierType.CONTROL_MASK in s and v in (Gdk.KEY_c, Gdk.KEY_C) and e.get_widget().get_root().copy: e.get_widget().get_root().finish(copy=True)
+        if v == Gdk.KEY_Escape: e.get_widget().get_root().finish()
+        if Gdk.ModifierType.CONTROL_MASK in s and v in (Gdk.KEY_c, Gdk.KEY_C) and e.get_widget().get_root().copy: e.get_widget().get_root().finish(abort=False, copy=True)
 
     @staticmethod
     def get_all(): return [i for i in LayerShell.get_all() if isinstance(i, Selector)]
@@ -1165,28 +1183,28 @@ class Controller(GObject.Object):
             if getattr(self, "ps", False) and v:
                 self.comboed.add("ps")
                 self.comboed.add(name)
-                call(i=PLAYER_IFACE, m="Next")
+                call(i=PL_ID, m="Next")
             else:
                 self.send(Pointer, "Left", v)
         if name == "circle":
             if getattr(self, "ps", False) and v:
                 self.comboed.add("ps")
                 self.comboed.add(name)
-                call(i=PLAYER_IFACE, m="Previous")
+                call(i=PL_ID, m="Previous")
             else:
                 self.send(Pointer, "Right", v)
         if name == "triangle":
             if getattr(self, "ps", False) and v:
                 self.comboed.add("ps")
                 self.comboed.add(name)
-                call(i=PLAYER_IFACE, m="PlayPause")
+                call(i=PL_ID, m="PlayPause")
             else:
                 self.send(Pointer, "Middle", v)
         if name == "square":
             if getattr(self, "ps", False) and v:
                 self.comboed.add("ps")
                 self.comboed.add(name)
-                call(i=PLAYER_IFACE, m="Shift")
+                call(i=PL_ID, m="Shift")
             elif WM.is_overview and v and hasattr(Niri, "connection"): Niri.request("Action", { "CloseWindow": {} })
         if name == "r2":
             if getattr(self, "ps", False) and v:
@@ -1218,13 +1236,13 @@ class Controller(GObject.Object):
             if getattr(self, "ps", False) and v:
                 self.comboed.add("ps")
                 self.comboed.add(name)
-                call(i=PLAYER_IFACE, m="Forward")
+                call(i=PL_ID, m="Forward")
             elif v and Pointer.instance: Pointer.send("EXTRA")
         if name == "l1":
             if getattr(self, "ps", False) and v:
                 self.comboed.add("ps")
                 self.comboed.add(name)
-                call(i=PLAYER_IFACE, m="Backward")
+                call(i=PL_ID, m="Backward")
             elif v and Pointer.instance: Pointer.send("SIDE")
         if name in ("up", "down", "left", "right"):
             if WM.is_overview and v and hasattr(Niri, "connection"):
@@ -1815,6 +1833,13 @@ class Notification(ListObject):
     @staticmethod
     def remove_all(*_): Notification.list.replace()
 
+    @staticmethod
+    def handle_dbus(dbus=None, connection=None, sender=None, path=None, i="", m="", p=None, inv=None):
+        if m == "CloseNotification": return inv.return_value(None) if inv else None
+        if m == "GetServerInformation": return inv.return_value(GLib.Variant("(ssss)", ("Shell", "Shell", "1", "1.3"))) if inv else None
+        if m == "GetCapabilities": return inv.return_value(GLib.Variant("(as)", (("actions", "body", "body-images", "body-markup", "icon-static", "persistence"),))) if inv else None
+        if m == "Notify": return Task(Notifications.add, inv, p).start() if inv else None
+
 Notification.list = List(Notification, list=True)
 
 class NotificationItem(Gtk.Overlay):
@@ -1896,7 +1921,7 @@ class Notifications(Window):
     pause = GObject.Property(type=bool, default=False)
     def __init__(self):
         super().__init__()
-        DBUS(NOTIFICATION_DBUS, NF_ID, DBUS.path(NF_ID), call)
+        DBUS(NOTIFICATION_DBUS, NF_ID, DBUS.path(NF_ID), Notification.handle_dbus)
         view = Gtk.ListView(model=Gtk.NoSelection(model=Notification.list), factory=NotificationItem.factory)
         view.set_css_classes([])
         overlay = Gtk.Overlay(child=Gtk.ScrolledWindow(child=view))
@@ -2380,7 +2405,7 @@ class Clipboard(Window):
         if "application/vnd.portal.filetransfer" in original and "text/plain;charset=utf-8" in data and not "text/uri-list" in data:
             try:
                 data["text/uri-list"] = list_to_str([uri_encode(i) for i in str_to_list(data["text/plain;charset=utf-8"].decode().replace("\x00", ""))]).encode()
-            except Exception as e: print(e)
+            except Exception as e: print("Clipboard:", e)
         if offer in Clipboard.list:
             if offer != Clipboard.list[-1]: return
             if data and any(data.values()): Clipboard.set(data)
@@ -2546,6 +2571,7 @@ DesktopApp.list = Gtk.SortListModel(model=List(DesktopApp, unique="id", static=T
 
 class AppChooser(Window):
     uri = GObject.Property(type=str)
+    handle = GObject.Property(type=str)
     content_type = GObject.Property(type=str)
     activation_token = GObject.Property(type=str)
     filter = GObject.Property(type=Gtk.Filter)
@@ -2556,6 +2582,8 @@ class AppChooser(Window):
 
     def __init__(self, inv=None, handle="", app_id="", parent_window="", choices="", options=None, content_type="", uri="", function=None):
         super().__init__()
+        self.handle = handle
+        if self.handle: Request.export(self.handle, self.close)
         self.function = function
         options = options or {}
         self.add_action(Gio.SimpleAction.new_stateful("show-all", None, get_variant(False)))
@@ -2598,6 +2626,9 @@ class AppChooser(Window):
     @staticmethod
     def do_close(self):
         if self.function: self.function(self, False)
+        if self.handle: Request.remove(self.handle)
+        self.function = None
+        self.handle = None
 
     @staticmethod
     def tooltip_bind(b, v): return "Show Default" if v.unpack() else "Show All"
@@ -2632,8 +2663,7 @@ class AppChooser(Window):
         l = json(Data.setting("Apps Last Used", {}))
         l[self.content_type] = i.id.rsplit(".desktop", 1)[0]
         Data.setting("Apps Last Used", {}, l)
-        if self.function: self.function(self, i)
-        self.function = None
+        self.__class__.do_close(self)
         self.close()
 
 class DesktopAppItem(Gtk.Image):
@@ -2920,166 +2950,18 @@ class Apps(LayerShell):
         if getattr(self, "highlight", False): self.highlight.remove_css_class("highlight")
         self.highlight = None
 
-class Palette(Palette, Window):
-    def __init__(self):
-        super().__init__(title=self.__class__.__name__)
-        self.set_content(Adw.ToolbarView(extend_content_to_top_edge=True, content=Gtk.Box(orientation=Gtk.Orientation.VERTICAL)))
-        header = Adw.HeaderBar(show_title=False)
-        header.pack_start(Button(icon_name="color-select", css_classes=["flat", "circular"], callback=self.__class__.do))
-        self.get_content().add_top_bar(header)
-
-    def start(self, color):
-        self = self or Palette()
-        box = self.get_content().get_content()
-        while box.get_first_child(): box.remove(box.get_first_child())
-        for i in self.adjust_rgb(color):
-            i = RGBA(i)
-            if any(it.get_rgba().equal(i) for it in box): continue
-            box.append(Gtk.ColorDialogButton(dialog=Gtk.ColorDialog(), rgba=i, vexpand=True, hexpand=True))
-        self.set_default_size(210, 122 * len([i for i in box]))
-        self.present()
-
-    def adjust_rgb(self, r):
-        c = rgb_to_hls(*RGBA.rgb(r, f=True))
-        lightest = [min(1.0, i + 0.2) if n == 1 else i for n, i in enumerate(c)]
-        light = [min(1.0, i + 0.1) if n == 1 else i for n, i in enumerate(c)]
-        if not any(i >= 0.02 for i in (lightest[0] - light[0], lightest[1] - light[1], lightest[2] - light[2])):
-            light = lightest
-        dark = [max(0.0, i - 0.1) if n == 1 else i for n, i in enumerate(c)]
-        darkest = [max(0.0, i - 0.2) if n == 1 else i for n, i in enumerate(c)]
-        if not any(i >= 0.02 for i in (dark[0] - darkest[0], dark[1] - darkest[1], dark[2] - darkest[2])):
-            dark = darkest
-        if lightest[1] >= 0.8: self.add_css_class("dark")
-        return (hls_to_rgb(*lightest), hls_to_rgb(*light), r, hls_to_rgb(*dark), hls_to_rgb(*darkest))
-
-    @staticmethod
-    def on_click(e, *args):
-        self = e.get_widget().get_root()
-        if isinstance(e, Gtk.GestureClick):
-            n, x, y, signal = args
-        else:
-            x, y, signal = args
-        if signal == "released": return
-        b = e.get_current_button()
-        w = self.pick(x, y, Gtk.PickFlags.DEFAULT)
-        if w:
-            w = w.get_ancestor(Gtk.ColorDialogButton)
-        if not(b == 3 and isinstance(w, Gtk.ColorDialogButton)): return
-        if Gdk.ModifierType.SHIFT_MASK in e.get_current_event_state():
-            c = self.__class__.get_hex(w.get_rgba())
-        else:
-            c = w.get_rgba().to_string()
-        Gdk.Display.get_default().get_clipboard().set(c)
-        Toast(f"Copied {'HEX' if c.startswith('#') else 'RGB'}", timeout=2)
-
-    @staticmethod
-    def get_hex(rgba): return "#{:02x}{:02x}{:02x}".format(*RGBA.rgb(rgba)) if rgba.is_opaque() else "#{:02x}{:02x}{:02x}{:02x}".format(*RGBA.rgb(rgba, a=True))
-
-    @staticmethod
-    def on_key_pressed(e, v, kc, s):
-        if v == Gdk.KEY_Escape:
-            e.get_widget().close()
-            return True
-
-    @staticmethod
-    def end(data):
-        if isinstance(data, Gio.DBusMethodInvocation): data.return_value(GLib.Variant("(ua{sv})", (1, {})))
-        elif hasattr(data, "close"): data.close()
-
-    @staticmethod
-    def finish(arg, d):
-        data, paintable = d
-        if not arg: return Palette.end(data)
-        try:
-            pixel = next(iter(Paintable.to_pixels(Paintable.crop(paintable, x=arg[1], y=arg[2], w=1, h=1))), [(0, 0, 0, 0)])[:3]
-        except Exception as e:
-            print("Palette:", e)
-            return Palette.end(data)
-        if isinstance(data, Gio.DBusMethodInvocation): data.return_value(GLib.Variant("(ua{sv})", (0, {"color": GLib.Variant("(ddd)", tuple(i / 255 for i in pixel))})))
-        else: Task.invoke(Palette.start, data, pixel)
-
-    @staticmethod
-    def do_ready(proxy, buffer):
-        d = proxy.function_data
-        del proxy.function_data
-        media = MediaStream(buffer, caps=f"video/x-raw,format={ImageCopy.get_default_format()},width={proxy.width},height={proxy.height},framerate=1/1")
-        media.sig = media.connect("invalidate-contents", Palette.media_changed, d)
-
-    def media_changed(media, d):
-        if media.is_empty(): return
-        media.disconnect(media.sig)
-        paintable = media.get_current_image()
-        Task.invoke(Selector(copy=True, function_data=(d, paintable), function=Palette.finish, single_pixel=True).overlay.set_child, Gtk.Picture(paintable=paintable))
-        Task.invoke(media.do_dispose)
-
-    @staticmethod
-    def do(b=False, data=False):
-        if Selector.get_all(): return Palette.end(b.get_root() if b else data)
-        if b: b.get_root().set_visible(False)
-        frame = ImageCopy.capture_frame()
-        if not frame: return Palette.end(b.get_root() if b else data)
-        frame.do_ready = Palette.do_ready
-        frame.function_data = b.get_root() if b else data
-
-class Authorize(EntryPrompt):
-    cookie = GObject.Property(type=str)
-    stdout_channel = GObject.Property(type=GLib.IOChannel)
-    stdin_channel = GObject.Property(type=GLib.IOChannel)
-    invocation = GObject.Property(type=Gio.DBusMethodInvocation)
-
-    def __init__(self, invocation, args):
-        super().__init__(callback=self.__class__.do, confirm_callback=False, password=True)
-        self.invocation = invocation
-        action_id, message, icon_name, details, self.cookie, identities = args
-        self.set_heading(message)
-        self.present()
-
-    @staticmethod
-    def do(self, r):
-        if r == "cancel" or not self.invocation: return self.finish()
-        if FLATPAK_ID:
-            success, pid, stdin_fd, stdout_fd, stderr_fd = GLib.spawn_async_with_pipes(None, ["/bin/flatpak-spawn", "--host", "/usr/lib/polkit-1/polkit-agent-helper-1", GLib.getenv("USER"), self.cookie], None, GLib.SpawnFlags.DEFAULT | GLib.SpawnFlags.CHILD_INHERITS_STDERR, None, None)
-        else:
-            success, pid, stdin_fd, stdout_fd, stderr_fd = GLib.spawn_async_with_pipes(None, ["/usr/lib/polkit-1/polkit-agent-helper-1", GLib.getenv("USER"), self.cookie], ["LC_ALL=C"], GLib.SpawnFlags.DEFAULT | GLib.SpawnFlags.CHILD_INHERITS_STDERR, None, None)
-        if not success: return self.finish()
-        self.stdin_channel = GLib.IOChannel.unix_new(stdin_fd)
-        self.stdin_channel.set_encoding("utf-8")
-        self.stdout_channel = GLib.IOChannel.unix_new(stdout_fd)
-        GLib.io_add_watch(self.stdout_channel, GLib.PRIORITY_DEFAULT, GLib.IOCondition.IN, self.__class__.communicate, self)
-        GLib.io_add_watch(self.stdin_channel, GLib.PRIORITY_DEFAULT, GLib.IOCondition.OUT, self.__class__.communicate, self)
-
-    @staticmethod
-    def communicate(channel, condition, self):
-        if not self.invocation: return
-        if channel == self.stdin_channel:
-            channel.write_chars(self.get_extra_child().get_text().encode(), -1)
-            channel.flush()
-            channel.write_chars("\n".encode(), -1)
-            channel.flush()
-        elif channel == self.stdout_channel:
-            message = channel.read_to_end()[-1].decode()
-            if "SUCCESS" in message: self.finish()
-            if "FAILURE" in message:
-                self.get_extra_child().set_text("")
-                self.get_extra_child().set_property("placeholder-text", "Try Again...")
-                self.present()
-
-    def finish(self):
-        for i in (self.stdout_channel, self.stdin_channel):
-            if i: i.shutdown(True)
-        if self.invocation: self.invocation.return_value(None)
-        self.invocation = None
-
 class PortalFileDialog(Gtk.FileDialog):
     invocation = GObject.Property(type=Gio.DBusMethodInvocation)
+    handle = GObject.Property(type=str)
     files = GObject.Property(type=object)
-    args = GObject.Property(type=object)
-    def __init__(self, invocation=None, operation="SaveFile", args=False):
-        v = args[-1].get("current_folder", None)
+    opt = GObject.Property(type=object)
+    cancellable = GObject.Property(type=Gio.Cancellable)
+    def __init__(self, invocation, operation, handle, app_id, parent_window, title, options):
+        v = options.get("current_folder", None)
         if v:
             v = Gio.File.new_for_path(bytes(v).rstrip(b"\x00").decode())
-        filters = args[-1].get("filters", None) or None
-        default_filter = args[-1].get("current_filter", None)
+        filters = options.get("filters", None) or None
+        default_filter = options.get("current_filter", None)
         if default_filter:
             if default_filter[1][0][0] == 1 and default_filter[1][0][1] == "*/*":
                 default_filter = None
@@ -3093,13 +2975,16 @@ class PortalFileDialog(Gtk.FileDialog):
             l = Gio.ListStore.new(Gtk.FileFilter)
             for i in filters: l.append(self.__class__.convert_filter(i))
             filters = l
-        super().__init__(title=args[3], modal=args[-1].get("modal", True), accept_label=args[-1]["accept_label"].replace("_", "") if args[-1].get("accept_label", False) else " File".join(operation.split("File")), initial_name=args[-1].get("current_name", ""), initial_folder=v, default_filter=default_filter, filters=filters)
-        self.multiple = args[-1].get("multiple", False)
-        self.args = args
-        if hasattr(self, "extra_menu") and self.args[-1].get("choices", False):
+        super().__init__(cancellable=Gio.Cancellable.new(), title=title, modal=options.get("modal", True), accept_label=options["accept_label"].replace("_", "") if options.get("accept_label", False) else " File".join(operation.split("File")), initial_name=options.get("current_name", ""), initial_folder=v, default_filter=default_filter, filters=filters)
+        self.handle = handle
+        def f(): self.cancellable.cancel()
+        Request.export(self.handle, f)
+        self.multiple = options.get("multiple", False)
+        self.opt = options
+        if hasattr(self, "extra_menu") and options.get("choices", False):
             self.extra_menu = m = Menu()
             c = []
-            for i in self.args[-1].get("choices", []):
+            for i in options.get("choices", []):
                 c.append(i[0])
                 v = bool(i[-1]) if not i[2] else i[-1]
                 variant = get_variant(v)
@@ -3107,16 +2992,16 @@ class PortalFileDialog(Gtk.FileDialog):
                 if type(v) == str: m.append_submenu(i[1], Menu(dict((it[1], f"win.{i[0]}::{it[0]}") for it in i[2])))
                 else: m.append(i[1], f"win.{i[0]}")
         self.invocation = invocation
-        self.files = [bytes(i).rstrip(b"\x00").decode() for i in self.args[-1].get("files", [])]
+        self.files = [bytes(i).rstrip(b"\x00").decode() for i in options.get("files", [])]
         if operation == "OpenFile":
-            if self.args[-1].get("directory", False):
-                if self.multiple: self.select_multiple_folders(callback=self.__class__.do, user_data=operation)
-                else: self.select_folder(callback=self.__class__.do, user_data=operation)
+            if options.get("directory", False):
+                if self.multiple: self.select_multiple_folders(cancellable=self.cancellable, callback=self.__class__.do, user_data=operation)
+                else: self.select_folder(cancellable=self.cancellable, callback=self.__class__.do, user_data=operation)
             else:
-                if self.multiple: self.open_multiple(callback=self.__class__.do, user_data=operation)
-                else: self.open(callback=self.__class__.do, user_data=operation)
-        if operation == "SaveFile": self.save(callback=self.__class__.do, user_data=operation)
-        if operation == "SaveFiles": self.select_folder(callback=self.__class__.do, user_data=operation)
+                if self.multiple: self.open_multiple(cancellable=self.cancellable, callback=self.__class__.do, user_data=operation)
+                else: self.open(cancellable=self.cancellable, callback=self.__class__.do, user_data=operation)
+        if operation == "SaveFile": self.save(cancellable=self.cancellable, callback=self.__class__.do, user_data=operation)
+        if operation == "SaveFiles": self.select_folder(cancellable=self.cancellable, callback=self.__class__.do, user_data=operation)
 
     @staticmethod
     def convert_filter(filter):
@@ -3129,10 +3014,10 @@ class PortalFileDialog(Gtk.FileDialog):
     @staticmethod
     def do(self, r, operation):
         try:
-            if not self.invocation: raise Exception
+            if not self.invocation: return self.end()
             f = None
             if operation == "OpenFile":
-                if self.args[-1].get("directory", False):
+                if self.opt.get("directory", False):
                     if self.multiple:
                         f = self.select_multiple_folders_finish(r)
                     else:
@@ -3157,7 +3042,7 @@ class PortalFileDialog(Gtk.FileDialog):
                     f = selected
                 else:
                     f = []
-            if f == None: raise Exception
+            if f == None: return self.end()
             if isinstance(f, Gio.File):
                 f = [f.get_uri()]
             else:
@@ -3170,19 +3055,24 @@ class PortalFileDialog(Gtk.FileDialog):
                 v["writable"] = GLib.Variant("b", False)
             f = self.get_property("default-filter")
             if operation in ("OpenFile", "SaveFile") and f:
-                f = next((i for i in self.args[-1].get("filters", []) if i[0] == f.get_name()), None)
+                f = next((i for i in self.opt.get("filters", []) if i[0] == f.get_name()), None)
                 if f:
                     v["current_filter"] = GLib.Variant("(sa(us))", f)
             if getattr(self, "extra_menu"):
                 c = []
-                for i in self.args[-1].get("choices", []):
+                for i in self.opt.get("choices", []):
                     va = self.lookup_action(i).get_state().unpack()
                     c.append((i, str(va).lower() if isinstance(va, bool) else va))
                 v["choices"] = GLib.Variant("a(ss)", c)
             self.invocation.return_value(GLib.Variant("(ua{sv})", (0, v)))
+            self.invocation = None
         except Exception as e:
-            print(e)
-            if self.invocation: self.invocation.return_value(GLib.Variant("(ua{sv})", (1, {})))
+            if str(e).strip(): print("PortalFileDialog:", e)
+        self.end()
+
+    def end(self):
+        if self.invocation: self.invocation.return_value(GLib.Variant("(ua{sv})", (1, {})))
+        if self.handle: Request.remove(self.handle)
         if not any(i != self and isinstance(i, Gtk.FileDialog) for i in Gtk.Window.list_toplevels()) and hasattr(Gtk.FileDialog, "data_uninit"): Gtk.FileDialog.data_uninit()
 
 class Niri:
@@ -3490,300 +3380,121 @@ class ImageCopy:
         if FLATPAK_ID: return exists(Path(ROOT, ImageCopy.gsr))
         return exists(ImageCopy.gsr)
 
-class ScreenCast(Prompt):
-    niri_sessions = {}
-    sessions = {}
-    session = GObject.Property(type=str)
-    video_selected = GObject.Property(type=str)
-    audio_selected = GObject.Property(type=str)
-    file = GObject.Property(type=Gio.File)
-    show_cursor = GObject.Property(type=bool, default=True)
-    gpu_screen_recorder = GObject.Property(type=bool, default=False)
-    invocation = GObject.Property(type=Gio.DBusMethodInvocation)
-    options = GObject.Property(type=object)
-    iface = "org.gnome.Mutter.ScreenCast"
-    watcher = None
+class Palette(Palette, Window):
+    def __init__(self):
+        super().__init__(title=self.__class__.__name__)
+        self.set_content(Adw.ToolbarView(extend_content_to_top_edge=True, content=Gtk.Box(orientation=Gtk.Orientation.VERTICAL)))
+        header = Adw.HeaderBar(show_title=False)
+        header.pack_start(Button(icon_name="color-select", css_classes=["flat", "circular"], callback=self.__class__.do))
+        self.get_content().add_top_bar(header)
 
-    def __init__(self, inv=None, p=None, audio_select=False):
-        ScreenCast.watch()
-        super().__init__(callback=self.__class__.do, confirm_callback=False)
-        self.invocation = inv
-        self.audios, self.videos = {}, {}
-        box = Gtk.ListBox(css_classes=("boxed-list", "main"), selection_mode=Gtk.SelectionMode.NONE)
-        self.set_properties(heading="Start Share" if self.invocation else "Start Recording", extra_child=box)
-        if not self.invocation:
-            self.gpu_screen_recorder = ImageCopy.get_gsr()
-        if self.gpu_screen_recorder: Task(self.__class__.get_gsr_options, self).start()
-        else:
-            if not self.invocation:
-                self.videos["None"] = False
-            toplevels = getattr(ImageCopy, "toplevel_capture", False)
-            if hasattr(ImageCopy, "manager"):
-                for i in Gdk.Display.get_default().get_monitors():
-                    self.videos[i.get_connector()] = i
-                if layer_shell:
-                    self.videos["Select Area"] = "Select Area"
-            if self.invocation and p and hasattr(self.__class__, "iface") and hasattr(Niri, "connection"):
-                self.session = self.__class__.niri_sessions[p[1]]
-                self.videos["niri Dynamic Cast Target"] = 1
-                toplevels = True
-            if toplevels and ImageCopy.toplevel_list.name.decode() in Wayland.interfaces:
-                o = Wayland.registry.bind(ImageCopy.toplevel_list, *Wayland.interfaces[ImageCopy.toplevel_list.name.decode()])
-                o.screencast = self
-                o.dispatcher(ImageCopy.toplevel_list_dispatcher)
-                Gdk.Display.get_default().sync()
-                o.stop()
-            Task.invoke(self.setup, audio_select)
-
-    def setup(self, audio_select):
-        if not self.videos: return self.invocation.return_value(GLib.Variant("(ua{sv})", (1, {}))) if self.invocation else None
-        select = Adw.ComboRow(title="Video Source", model=Gtk.StringList.new(tuple(self.videos.keys())))
-        box = self.get_extra_child()
-        box.append(select)
-        if audio_select:
-            if not hasattr(self, "audios"):
-                self.audios = {"None": False}
-            if not self.gpu_screen_recorder:
-                lines = GLib.spawn_command_line_sync("wpctl status")[1].decode().splitlines()
-                result = []
-                for n, i in enumerate(lines):
-                    if i == "Audio":
-                        lines = lines[n:]
-                        break
-                group = ""
-                previous = ""
-                for n, i in enumerate(lines):
-                    if not i: break
-                    if not group:
-                        group = i if i.endswith(("Sinks:", "Sources:", "Streams:")) else ""
-                        continue
-                    if len(i) == 4:
-                        group = ""
-                        continue
-                    if ". input_" in i or ". output_" in i: continue
-                    if ". monitor_" in i:
-                        if previous:
-                            previous = ""
-                        continue
-                    if previous: result.append(previous)
-                    previous = i.split(".", 1)[0].replace("│", "").replace("*", "").strip()
-                if previous: result.append(previous)
-                for _id in result:
-                    r = GLib.spawn_command_line_sync(f"wpctl inspect {_id}")[1].decode()
-                    if not "object.serial = \"" in r: continue
-                    name = ""
-                    for i in ("media.name", "node.description"):
-                        if not name and i in r:
-                            name = r.split(f"{i} = \"", 1)[-1].split("\n", 1)[0].split("\"", 1)[0]
-                    if "port.group = \"capture\"" in r:
-                        name = "(Input) " + name
-                    if name:
-                        self.audios[unique_name(name, self.audios)] = r.split("object.serial = \"", 1)[-1].split("\"", 1)[0]
-            s = Adw.ComboRow(title="Audio Source", model=Gtk.StringList.new(tuple(self.audios.keys())))
-            s.bind_property("selected-item", self, "audio-selected", DEFAULT_BIND, self.__class__.select_bind)
-            box.append(s)
-        r = Adw.SwitchRow(title="Show Cursor", active=True)
-        r.bind_property("active", self, "show-cursor", DEFAULT_BIND)
-        box.append(r)
-        if not self.invocation:
-            select.bind_property("selected", r, "visible", DEFAULT_BIND, self.__class__.cursor_bind)
-            r = Adw.ActionRow(title="Save Location")
-            b = Button(callback=self.__class__.select_file, icon_name="folder-open", valign=Gtk.Align.CENTER, bindings=[(self, "file", None, "tooltip-text", None, self.__class__.file_bind)])
-            r.add_suffix(b)
-            box.append(r)
-        select.bind_property("selected-item", self, "video-selected", DEFAULT_BIND, self.__class__.select_bind)
+    def start(self, color):
+        self = self or Palette()
+        box = self.get_content().get_content()
+        while box.get_first_child(): box.remove(box.get_first_child())
+        for i in self.adjust_rgb(color):
+            i = RGBA(i)
+            if any(it.get_rgba().equal(i) for it in box): continue
+            box.append(Gtk.ColorDialogButton(dialog=Gtk.ColorDialog(), rgba=i, vexpand=True, hexpand=True))
+        self.set_default_size(210, 122 * len([i for i in box]))
         self.present()
 
-    @staticmethod
-    def get_gsr_options(self):
-        r = str_to_list(GLib.spawn_command_line_sync(f"{ImageCopy.gsr} --list-capture-options")[1].decode())
-        self.videos["Select Area"] = "Select Area"
-        self.videos.update(dict((i.split("|", 1)[0], i.split("|", 1)[0]) for i in r if not i in ("portal", "region")))
-        self.audios = {"None": False}
-        for i in ("audio-devices", "application-audio"):
-            r = str_to_list(GLib.spawn_command_line_sync(f"{ImageCopy.gsr} --list-{i}")[1].decode())
-            for it in r:
-                if it.startswith(("default_output", "default_input")): continue
-                self.audios[it.split("|", 1)[-1]] = ("device:" if "device" in i else "app:") + it.split("|", 1)[0]
-        Task.invoke(self.setup, True)
+    def adjust_rgb(self, r):
+        c = rgb_to_hls(*RGBA.rgb(r, f=True))
+        lightest = [min(1.0, i + 0.2) if n == 1 else i for n, i in enumerate(c)]
+        light = [min(1.0, i + 0.1) if n == 1 else i for n, i in enumerate(c)]
+        if not any(i >= 0.02 for i in (lightest[0] - light[0], lightest[1] - light[1], lightest[2] - light[2])):
+            light = lightest
+        dark = [max(0.0, i - 0.1) if n == 1 else i for n, i in enumerate(c)]
+        darkest = [max(0.0, i - 0.2) if n == 1 else i for n, i in enumerate(c)]
+        if not any(i >= 0.02 for i in (dark[0] - darkest[0], dark[1] - darkest[1], dark[2] - darkest[2])):
+            dark = darkest
+        if lightest[1] >= 0.8: self.add_css_class("dark")
+        return (hls_to_rgb(*lightest), hls_to_rgb(*light), r, hls_to_rgb(*dark), hls_to_rgb(*darkest))
 
     @staticmethod
-    def cursor_bind(b, v): return v != 0
-
-    @staticmethod
-    def file_bind(b, v): return v.get_uri() if v else ""
-
-    def get_filename(self): return f"{GLib.DateTime.new_now_local().format('%Y%m%d%H%M%S')}.mp4"
-
-    @staticmethod
-    def select_file(b):
-        self = b.get_ancestor(ScreenCast)
-        if not self: return
-        Gtk.FileDialog(initial_name=self.get_filename()).save(callback=self.__class__.do_select_file, data=self)
-
-    @staticmethod
-    def do_select_file(d, r, self):
-        try:
-            self.file = d.save_finish(r)
-        except:
-            self.file = None
-
-    @staticmethod
-    def stop_recording(d):
-        if getattr(d, "pipeline", None):
-            pipeline = d.pipeline
-            del d.pipeline
-            p = pipeline.get_by_name("PipeWire")
-            if p: p.send_event(Gst.Event.new_eos())
-            if getattr(pipeline, "source", False): pipeline.source.emit("end-of-stream")
-            bus = pipeline.get_bus()
-            bus.add_signal_watch()
-            bus.connect("message", ScreenCast.do_finish, pipeline)
-            pipeline.send_event(Gst.Event.new_eos())
-        if hasattr(d, "pid"): GLib.spawn_command_line_sync(f"pkill -SIGINT -p {d.pid}")
-
-    @staticmethod
-    def do_finish(bus, message, pipeline):
-        if message.type == Gst.MessageType.ERROR or message.type == Gst.MessageType.EOS: Task.invoke(pipeline.set_state, Gst.State.NULL)
-
-    @staticmethod
-    def do_pick(arg, self):
-        if arg == False: self.__class__.do(self, "cancel")
-        else: self.__class__.do(self, "confirm", tuple(arg))
-
-    @staticmethod
-    def do(self, c, result=False):
-        if c != "confirm":
-            if self.invocation: self.invocation.return_value(GLib.Variant("(ua{sv})", (1, {})))
-            return
-        vs = self.videos[self.video_selected]
-        if vs == "Select Area" and not result:
-            Selector(function_data=self, function=self.__class__.do_pick)
-            return
-        if not self.invocation:
-            if self.video_selected == "None" and self.videos["None"] == False and self.audio_selected == "None" and self.audios["None"] == False: return
-            plaunch = ""
-            video = audio = False
-            if vs:
-                if result:
-                    video, x, y, w, h = result
-                else:
-                    video, x, y, w, h = vs, -1, -1, 0, 0
-                if isinstance(video, Gdk.Monitor):
-                    g = video.get_geometry()
-                    crop = ImageCopy.get_crop(W=g.width, H=g.height, w=w, h=h, x=x, y=y)
-                    plaunch += f" appsrc emit-signals=false format=time do-timestamp=true is-live=true max-buffers=4 block=false name=Source ! video/x-raw,format={ImageCopy.get_default_format()},width={g.width},height={g.height},framerate=60/1 !{crop} vapostproc ! vah264enc ! h264parse ! queue ! Mux."
-            if self.audios.get(self.audio_selected, False) != False:
-                audio = self.audios[self.audio_selected]
-                plaunch += " pipewiresrc name=PipeWire do-timestamp=true provide-clock=false ! queue max-size-time=500000000 ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2 ! opusenc bitrate-type=cbr bitrate=128000 frame-size=20 ! queue ! Mux."
-            if not (audio or video): return
-            p = Prompt(heading="Stop Recording", callback=self.__class__.stop_recording)
-            p.remove_response("cancel")
-            plaunch = plaunch.strip() + f" mp4mux name=Mux ! filesink name=File"
-            if self.gpu_screen_recorder:
-                command = ["/bin/flatpak-spawn", "--host"] if FLATPAK_ID else []
-                command.extend([ImageCopy.gsr, "-cursor", "yes" if self.show_cursor else "no", "-o", self.file.get_path() if self.file else self.get_filename()])
-                if video:
-                    if isinstance(video, Gdk.Monitor): command.extend(["-w", f"{w}x{h}+{x}+{y}"])
-                    else: command.extend(["-w", video])
-                if audio: command.extend(["-a", audio])
-                success, p.pid, stdin_fd, stdout_fd, stderr_fd = GLib.spawn_async_with_pipes(argv=command, flags=GLib.SpawnFlags.DEFAULT | GLib.SpawnFlags.CHILD_INHERITS_STDERR)
-            else:
-                pipeline = p.pipeline = Gst.parse_launch(plaunch.strip())
-                pipeline.get_by_name("File").set_property("location", self.file.get_uri() if self.file else self.get_filename())
-                if audio: pipeline.get_by_name("PipeWire").set_property("target-object", audio)
-                if video:
-                    pipeline.source = pipeline.get_by_name("Source")
-                    pipeline.args = {"source": video, "cursor": self.show_cursor}
-                    frame = ImageCopy.capture_frame(**pipeline.args)
-                    if not frame: return
-                    frame.prompt = p
-                    frame.do_ready = self.__class__.recording_do_ready
-                    pipeline.set_state(Gst.State.PLAYING)
-                else: pipeline.set_state(Gst.State.PLAYING)
-            p.present()
-        elif not isinstance(vs, Gdk.Monitor) and not result and self.session and hasattr(Niri, "connection") and SESSION:
-            b = Gio.DBusProxy.new_sync(SESSION, Gio.DBusProxyFlags.NONE, None, self.__class__.iface, self.session, self.__class__.iface + ".Session", None)
-            SESSION.signal_subscribe(None, self.__class__.iface + ".Stream", "PipeWireStreamAdded", b.call_sync("RecordWindow", GLib.Variant("(a{sv})", ({"window-id": GLib.Variant("t", int(vs)), "cursor-mode": GLib.Variant("u", int(self.show_cursor))}, )), Gio.DBusCallFlags.NONE, 5000, None)[0], None, Gio.DBusSignalFlags.NONE, self.__class__.stream_added, self)
-            b.call_sync("Start", None, Gio.DBusCallFlags.NONE, 5000, None)
+    def on_click(e, *args):
+        self = e.get_widget().get_root()
+        if isinstance(e, Gtk.GestureClick):
+            n, x, y, signal = args
         else:
-            vs = result or vs
-            for k, v in ScreenCast.sessions.items():
-                if v["Video Source"] == vs and v["Show Cursor"] == self.show_cursor: return ScreenCast.sessions[k]["Invocations"].append(self.invocation)
-            n = str(len(tuple(ScreenCast.sessions.keys())))
-            ScreenCast.sessions[n] = {
-                "Invocations": [self.invocation],
-                "Video Source": vs,
-                "Show Cursor": self.show_cursor
-            }
-            if self.audios:
-                ScreenCast.sessions[n]["Audio Source"] = self.audios[self.audio_selected]
-            a = vs if isinstance(vs, tuple) else False
-            ScreenCast.sessions[n]["Args"] = args = {"source": a[0] if a else vs, "x": a[1] if a else -1, "y": a[2] if a else -1, "w": a[3] if a else 0, "h": a[4] if a else 0, "cursor": self.show_cursor}
-            ScreenCast.watch()
-            frame = ImageCopy.capture_frame(source=args["source"], cursor=args["cursor"])
-            if not frame: return
-            frame.session, frame.do_ready = n, self.__class__.share_do_ready
+            x, y, signal = args
+        if signal == "released": return
+        b = e.get_current_button()
+        w = self.pick(x, y, Gtk.PickFlags.DEFAULT)
+        if w:
+            w = w.get_ancestor(Gtk.ColorDialogButton)
+        if not(b == 3 and isinstance(w, Gtk.ColorDialogButton)): return
+        if Gdk.ModifierType.SHIFT_MASK in e.get_current_event_state():
+            c = self.__class__.get_hex(w.get_rgba())
+        else:
+            c = w.get_rgba().to_string()
+        Gdk.Display.get_default().get_clipboard().set(c)
+        Toast(f"Copied {'HEX' if c.startswith('#') else 'RGB'}", timeout=2)
 
     @staticmethod
-    def select_bind(b, v): return v.get_string()
+    def get_hex(rgba): return "#{:02x}{:02x}{:02x}".format(*RGBA.rgb(rgba)) if rgba.is_opaque() else "#{:02x}{:02x}{:02x}{:02x}".format(*RGBA.rgb(rgba, a=True))
 
     @staticmethod
-    def watch():
-        for i in [i for i in ScreenCast.sessions.values()]:
-            p = i.get("Pipeline", False)
-            if p and (not hasattr(p, "node_id") or not 'state: "running"' in GLib.spawn_command_line_sync(f"/bin/pw-cli info {p.node_id}")[1].decode()): ImageCopy.destroy_object(p)
-        v = bool(ScreenCast.sessions)
-        if not v and hasattr(ScreenCast, "watcher"):
-            del ScreenCast.watcher
-        return v
+    def on_key_pressed(e, v, kc, s):
+        if v == Gdk.KEY_Escape:
+            e.get_widget().close()
+            return True
 
     @staticmethod
-    def recording_do_ready(proxy, buffer):
-        if not hasattr(proxy, "prompt"): return
-        if not hasattr(proxy.prompt, "pipeline"):
-            del proxy.prompt
-            return
-        pipeline = proxy.prompt.pipeline
-        pipeline.source.emit("push-buffer", buffer)
-        ImageCopy.new_frame(proxy, ImageCopy.capture_frame(add_user=False, **pipeline.args))
+    def do_ready(proxy, buffer):
+        c, d = proxy.function_data
+        del proxy.function_data
+        if c.is_cancelled(): return
+        media = MediaStream(buffer, caps=f"video/x-raw,format={ImageCopy.get_default_format()},width={proxy.width},height={proxy.height},framerate=1/1")
+        media.sig = media.connect("invalidate-contents", Palette.media_changed, (c, d))
+
+    def media_changed(media, d):
+        if media.is_empty(): return
+        media.disconnect(media.sig)
+        paintable = media.get_current_image()
+        if d[0].is_cancelled(): return
+        s = Selector(function_data=(d, paintable), function=Palette.finish, single_pixel=True)
+        s.cancellable = d[0]
+        d[0].connect(s.close)
+        Task.invoke(s.overlay.set_child, Gtk.Picture(paintable=paintable))
+        Task.invoke(media.do_dispose)
 
     @staticmethod
-    def share_do_ready(proxy, buffer):
-        if not hasattr(proxy, "session"): return
-        if not proxy.session in ScreenCast.sessions:
-            Task.invoke(ImageCopy.destroy_object, proxy)
-            return
-        args = ScreenCast.sessions[proxy.session]["Args"]
-        if not ScreenCast.sessions[proxy.session].get("Pipeline", False):
-            crop = ImageCopy.get_crop(W=proxy.width, H=proxy.height, w=args["w"], h=args["h"], x=args["x"], y=args["y"])
-            p = f"appsrc emit-signals=false format=time do-timestamp=true is-live=true max-buffers=4 block=false name=Source ! video/x-raw,format={ImageCopy.get_default_format()},width={proxy.width},height={proxy.height},framerate=60/1 !{crop} vapostproc ! pipewiresink name=PipeWire client_name=shell-screencast-{proxy.session} mode=2"
-            ScreenCast.sessions[proxy.session]["Pipeline"] = pipeline = Gst.parse_launch(p)
-            pipeline.session = proxy.session
-            pipeline.pipewire, pipeline.source = [pipeline.get_by_name(i) for i in ("PipeWire", "Source")]
-            pipeline.set_bus(None)
-            pipeline.set_properties(async_handling=False, message_forward=False)
-            pipeline.set_state(Gst.State.PLAYING)
-            if getattr(ScreenCast, "watcher", False):
-                try: GLib.source_remove(ScreenCast.watcher)
-                except: pass
-            ScreenCast.watcher = GLib.timeout_add(1000 * 10, ScreenCast.watch)
-        pipeline = ScreenCast.sessions[proxy.session]["Pipeline"]
-        pipeline.source.emit("push-buffer", buffer)
-        if not hasattr(pipeline, "node_id"):
-            try:
-                pipeline.node_id = int(GLib.spawn_command_line_sync("wpctl status")[1].decode().split(". " + pipeline.pipewire.get_property("client-name"), 1)[0].rsplit(" ", 1)[-1])
-                pipeline.serial = int(GLib.spawn_command_line_sync(f"wpctl inspect {pipeline.node_id}")[1].decode().split("object.serial = \"", 1)[-1].split("\"", 1)[0])
-            except: pass
-        if hasattr(pipeline, "node_id") and ScreenCast.sessions[proxy.session]["Invocations"]:
-            for i in [i for i in ScreenCast.sessions[proxy.session]["Invocations"]]:
-                if ScreenCast.sessions[proxy.session].get("Audio Source", False): pass
-                i.return_value(GLib.Variant("(ua{sv})", (0, { "streams": GLib.Variant("a(ua{sv})", [(pipeline.node_id, {"position": GLib.Variant("(ii)", (0, 0)), "size": GLib.Variant("(ii)", (1, 1)), "source_type": GLib.Variant("u", 1)}), ]), "persist_mode": GLib.Variant("u", 0), "pipewire-serial": GLib.Variant("t", pipeline.serial)})))
-                ScreenCast.sessions[proxy.session]["Invocations"].remove(i)
-        ImageCopy.new_frame(proxy, ImageCopy.capture_frame(add_user=False, source=args["source"], cursor=args["cursor"]))
+    def finish(arg, d):
+        data, paintable = d
+        cancellable, data = data
+        if cancellable.is_cancelled(): return
+        if not arg: return cancellable.cancel()
+        try:
+            pixel = next(iter(Paintable.to_pixels(Paintable.crop(paintable, x=arg[1], y=arg[2], w=1, h=1))), [(0, 0, 0, 0)])[:3]
+        except Exception as e:
+            print("Palette:", e)
+            return Palette.end(data)
+        if isinstance(data, Gio.DBusMethodInvocation): data.return_value(GLib.Variant("(ua{sv})", (0, {"color": GLib.Variant("(ddd)", tuple(i / 255 for i in pixel))})))
+        else: Task.invoke(Palette.start, data, pixel)
+        Task.invoke(cancellable.cancel)
 
     @staticmethod
-    def stream_added(conn, sender, signal, path, iface, params, self): self.invocation.return_value(GLib.Variant("(ua{sv})", (0, { "streams": GLib.Variant("a(ua{sv})", [(params[0], {"size": GLib.Variant("(ii)", (1, 1)), "source_type": GLib.Variant("u", 2)}), ]), "persist_mode": GLib.Variant("u", 0), })))
+    def end(data, handle=""):
+        if isinstance(data, Gio.DBusMethodInvocation): data.return_value(GLib.Variant("(ua{sv})", (1, {})))
+        elif hasattr(data, "close"): data.close()
+        if handle: Request.remove(handle)
+
+    @staticmethod
+    def do(b=False, data=False, handle=""):
+        if Selector.get_all(): return Palette.end(b.get_root() if b else data)
+        if b: b.get_root().set_visible(False)
+        frame = ImageCopy.capture_frame()
+        if not frame: return Palette.end(b.get_root() if b else data, handle=handle)
+        frame.do_ready = Palette.do_ready
+        cancellable = Gio.Cancellable.new()
+        if handle:
+            def f(): cancellable.cancel()
+            Request.export(handle, f)
+        def f(): Palette.end(b.get_root() if b else data, handle=handle)
+        cancellable.connect(f)
+        frame.function_data = (cancellable, b.get_root() if b else data)
 
 class Screenshot:
     @staticmethod
@@ -3793,28 +3504,29 @@ class Screenshot:
         media = MediaStream(buffer, caps=f"video/x-raw,format={ImageCopy.get_default_format()},width={proxy.width},height={proxy.height},framerate=1/1")
         media.sig = media.connect("invalidate-contents", Screenshot.media_changed, d)
 
+    @staticmethod
     def media_changed(media, d):
         if media.is_empty(): return
         media.disconnect(media.sig)
         paintable = media.get_current_image()
-        data, interactive = d
-        if interactive: Task.invoke(Selector(copy=True, function_data=(data, paintable), function=Screenshot.finish).overlay.set_child, Gtk.Picture(paintable=paintable))
+        cancellable, data, interactive = d
+        if cancellable.is_cancelled(): return
+        if interactive:
+            s = Selector(copy=True, function_data=(cancellable, data, paintable), function=Screenshot.finish)
+            Task.invoke(s.overlay.set_child, Gtk.Picture(paintable=paintable))
+            s.cancellable = d[0]
+            d[0].connect(s.close)
         else: Task.invoke(Screenshot.finish, True, (data, paintable))
         Task.invoke(media.do_dispose)
 
+    @staticmethod
     def finish(arg, d):
-        data, paintable = d
-        if arg == False and isinstance(data, Gio.DBusMethodInvocation):
-            if data.get_object_path().endswith("Shell"): Task.invoke(data.return_value, GLib.Variant("(s)", ("",)))
-            else: Task.invoke(data.return_value, GLib.Variant("(ua{sv})", (1, {})))
-            return
+        cancellable, data, paintable = d
+        if arg == False and isinstance(data, Gio.DBusMethodInvocation): return cancellable.cancel()
         file = Path(HOME, f"{GLib.DateTime.new_now_local().format('%Y%m%d%H%M%S')}.png")
         texture = None
         try:
-            if arg == True:
-                node = Paintable.crop(paintable, node=True)
-            else:
-                node = Paintable.crop(paintable, x=arg[1], y=arg[2], w=arg[3], h=arg[4], node=True)
+            node = Paintable.crop(paintable, node=True) if arg == True else Paintable.crop(paintable, x=arg[1], y=arg[2], w=arg[3], h=arg[4], node=True)
             texture = Paintable.render_texture(node)
             if arg != True and arg[5] == True:
                 Clipboard.set({"image/png": texture.save_to_png_bytes().get_data()})
@@ -3831,24 +3543,27 @@ class Screenshot:
                     Gdk.Display.get_default().flush()
                 if data.get_object_path().endswith("Shell"): Task.invoke(data.return_value, GLib.Variant("(s)", (file.get_path(),)))
                 else: Task.invoke(data.return_value, GLib.Variant("(ua{sv})", (0, {"uri": GLib.Variant("s", file.get_uri())})))
-            else:
-                if data.get_object_path().endswith("Shell"): Task.invoke(data.return_value, GLib.Variant("(s)", ("",)))
-                else: Task.invoke(data.return_value, GLib.Variant("(ua{sv})", (1, {})))
+        Task.invoke(cancellable.cancel)
 
     @staticmethod
-    def check(event, file):
-        if event.is_set(): return
-        if exists(file):
-            event.set()
-            return
-        return True
+    def end(data=False, handle=""):
+        if isinstance(data, Gio.DBusMethodInvocation):
+            if data.get_object_path().endswith("Shell"): data.return_value(GLib.Variant("(s)", ("",)))
+            else: data.return_value(GLib.Variant("(ua{sv})", (1, {})))
+        if handle: Request.remove(handle)
 
     @staticmethod
-    def do(data=None, interactive=False):
+    def do(data=None, interactive=False, handle=""):
         frame = ImageCopy.capture_frame()
         if not frame: return
+        cancellable = Gio.Cancellable.new()
+        if handle:
+            def f(): cancellable.cancel()
+            Request.export(handle, f)
+        def f(): Screenshot.end(data, handle=handle)
+        cancellable.connect(f)
         frame.do_ready = Screenshot.do_ready
-        frame.function_data = [data, interactive]
+        frame.function_data = (cancellable, data, interactive)
 
 class Player(Window):
     players = []
@@ -3951,12 +3666,12 @@ class Player(Window):
     def callback(b, p=None):
         self = b.get_root()
         if self.updating: return
-        if b in (self.previous, self.backward, self.forward, self.next): call(i=PLAYER_IFACE, m=b.get_tooltip_text())
-        if b == self.playback: call(i=PLAYER_IFACE, m="PlayPause")
-        if b == self.shift: call(i=PLAYER_IFACE, m="Shift")
-        if b == self.unshift: call(i=PLAYER_IFACE, m="Unshift")
-        if b == self.loop: call(i=PLAYER_IFACE, m="Loop")
-        if b.get_visible() and b == self.shuffle: call(i=PLAYER_IFACE, m="Shuffle")
+        if b in (self.previous, self.backward, self.forward, self.next): call(i=PL_ID, m=b.get_tooltip_text())
+        if b == self.playback: call(i=PL_ID, m="PlayPause")
+        if b == self.shift: call(i=PL_ID, m="Shift")
+        if b == self.unshift: call(i=PL_ID, m="Unshift")
+        if b == self.loop: call(i=PL_ID, m="Loop")
+        if b.get_visible() and b == self.shuffle: call(i=PL_ID, m="Shuffle")
 
     @staticmethod
     def update_loop_icon_name(b, v): return "media-playlist-" + next((f for s, f in Player.loops.items() if s == v), "")
@@ -4025,20 +3740,47 @@ class Player(Window):
         self.set_title(props.get("Metadata", {}).get("xesam:title", "Player"))
         self.updating = False
 
-class AccessDialog(Prompt):
-    invocation = GObject.Property(type=Gio.DBusMethodInvocation)
-    def __init__(self, inv, handle, app_id, parent_window, title, subtitle, body, options):
-        self.responses = (options.get("deny_label", "cancel"), options.get("grant_label", "confirm"))
-        super().__init__(confirm_callback=False, callback=self.__class__.response, responses=self.responses, heading=title, extra_child=Gtk.Label(wrap=True, label=f"{subtitle}\n{body}".strip(), justify=Gtk.Justification.CENTER) if body or subtitle else None)
-        self.invocation = inv
-        self.present()
-
     @staticmethod
-    def response(self, r):
-        if not self.invocation: return
-        if r == self.responses[0]: self.invocation.return_value(GLib.Variant("(ua{sv})", (1, {})))
-        else: self.invocation.return_value(GLib.Variant("(ua{sv})", (0, {})))
-        self.invocation = None
+    def handle_dbus(dbus=None, connection=None, sender=None, path=None, i="", m="", p=None, inv=None):
+        if not Player.players: return inv.return_value(None) if inv else None
+        if m == "Shift":
+            Player.current += 1
+            if Player.current >= len(Player.players):
+                Player.current = 0
+        if m == "Unshift":
+            if Player.current == 0:
+                Player.current = len(Player.players) - 1
+            else:
+                Player.current -= 1
+        else:
+            while Player.current >= len(Player.players):
+                Player.current -= 1
+        current = Player.players[Player.current]
+        if m.startswith(("Play", "Pause", "Next", "Previous")) and SESSION:
+            try: Gio.DBusProxy.new_sync(SESSION, Gio.DBusProxyFlags.NONE, None, current, Player.path, Player.player_iface, None).call_sync(m, None, Gio.DBusCallFlags.NONE, 5000, None)
+            except Exception as e:
+                if " is not available now" in str(e): pass
+                else: print(e)
+        elif not "hift" in m and SESSION:
+            props = Gio.DBusProxy.new_sync(SESSION, Gio.DBusProxyFlags.NONE, None, current, Player.path, Player.properties_iface, None).call_sync("GetAll", GLib.Variant("(s)", (Player.player_iface,)), Gio.DBusCallFlags.NONE, 5000, None)
+            if not props: return
+            props = props[0]
+            if m == "Shuffle" and m in props: Gio.DBusProxy.new_sync(SESSION, Gio.DBusProxyFlags.NONE, None, current, Player.path, Player.properties_iface, None).call_sync("Set", GLib.Variant("(ssv)", (Player.player_iface, m, GLib.Variant("b", not props[m]))), Gio.DBusCallFlags.NONE, 5000, None)
+            if m.startswith("Volume") and "Volume" in props: Gio.DBusProxy.new_sync(SESSION, Gio.DBusProxyFlags.NONE, None, current, Player.path, Player.properties_iface, None).call_sync("Set", GLib.Variant("(ssv)", (Player.player_iface, "Volume", GLib.Variant("d", props["Volume"] + (-0.05 if m.endswith("Down") else +0.05)))), Gio.DBusCallFlags.NONE, 5000, None)
+            if m == "Loop" and "LoopStatus" in props:
+                l = tuple(Player.loops.keys())
+                n = l.index(props["LoopStatus"]) + 1
+                if n >= len(l):
+                    n = 0
+                Gio.DBusProxy.new_sync(SESSION, Gio.DBusProxyFlags.NONE, None, current, Player.path, Player.properties_iface, None).call_sync("Set", GLib.Variant("(ssv)", (Player.player_iface, "LoopStatus", GLib.Variant("s", l[n]))), Gio.DBusCallFlags.NONE, 5000, None)
+            if m in ("Backward", "Forward") and "Position" in props and props.get("CanSeek", True) == True:
+                track = props.get("Metadata", {}).get("mpris:trackid", "/org/mpris/MediaPlayer2/TrackList/NoTrack")
+                v = props["Position"] + (-2e6 if m == "Backward" else 2e6)
+                p = Gio.DBusProxy.new_sync(SESSION, Gio.DBusProxyFlags.NONE, None, current, Player.path, Player.player_iface, None)
+                if track.startswith("/org/mpris/MediaPlayer2/webkit"): p.call_sync("Seek", GLib.Variant("(x)", (v,)), Gio.DBusCallFlags.NONE, 5000, None)
+                else: p.call_sync("SetPosition", GLib.Variant("(ox)", ("/org/mpris/MediaPlayer2/TrackList/NoTrack", v)), Gio.DBusCallFlags.NONE, 5000, None)
+        Task.invoke(Player.update)
+        return inv.return_value(None) if inv else None
 
 class Settings(Window):
     APPEARANCE = "org.freedesktop.appearance"
@@ -4406,30 +4148,387 @@ class Settings(Window):
         if namespace == self.APPEARANCE and hasattr(Niri, "connection"): Niri.request("Action", { "DoScreenTransition": {} })
         if namespace: App.default.get_dbus_connection().emit_signal(None, "/org/freedesktop/portal/desktop", f"{PT_ID}.Settings", "SettingChanged", GLib.Variant("(ssv)", (namespace, name, value)))
 
-class AccountPrompt(Prompt):
+class Authorize(EntryPrompt):
+    cookie = GObject.Property(type=str)
+    stdout_channel = GObject.Property(type=GLib.IOChannel)
+    stdin_channel = GObject.Property(type=GLib.IOChannel)
+    invocation = GObject.Property(type=Gio.DBusMethodInvocation)
+
+    def __init__(self, invocation, args):
+        super().__init__(callback=self.__class__.do, confirm_callback=False, password=True)
+        self.invocation = invocation
+        action_id, message, icon_name, details, self.cookie, identities = args
+        self.set_heading(message)
+        self.present()
+
+    @staticmethod
+    def do(self, r):
+        if r == "cancel" or not self.invocation: return self.finish()
+        if FLATPAK_ID:
+            success, pid, stdin_fd, stdout_fd, stderr_fd = GLib.spawn_async_with_pipes(None, ["/bin/flatpak-spawn", "--host", "/usr/lib/polkit-1/polkit-agent-helper-1", GLib.getenv("USER"), self.cookie], None, GLib.SpawnFlags.DEFAULT | GLib.SpawnFlags.CHILD_INHERITS_STDERR, None, None)
+        else:
+            success, pid, stdin_fd, stdout_fd, stderr_fd = GLib.spawn_async_with_pipes(None, ["/usr/lib/polkit-1/polkit-agent-helper-1", GLib.getenv("USER"), self.cookie], ["LC_ALL=C"], GLib.SpawnFlags.DEFAULT | GLib.SpawnFlags.CHILD_INHERITS_STDERR, None, None)
+        if not success: return self.finish()
+        self.stdin_channel = GLib.IOChannel.unix_new(stdin_fd)
+        self.stdin_channel.set_encoding("utf-8")
+        self.stdout_channel = GLib.IOChannel.unix_new(stdout_fd)
+        GLib.io_add_watch(self.stdout_channel, GLib.PRIORITY_DEFAULT, GLib.IOCondition.IN, self.__class__.communicate, self)
+        GLib.io_add_watch(self.stdin_channel, GLib.PRIORITY_DEFAULT, GLib.IOCondition.OUT, self.__class__.communicate, self)
+
+    @staticmethod
+    def communicate(channel, condition, self):
+        if not self.invocation: return
+        if channel == self.stdin_channel:
+            channel.write_chars(self.get_extra_child().get_text().encode(), -1)
+            channel.flush()
+            channel.write_chars("\n".encode(), -1)
+            channel.flush()
+        elif channel == self.stdout_channel:
+            message = channel.read_to_end()[-1].decode()
+            if "SUCCESS" in message: self.finish()
+            if "FAILURE" in message:
+                self.get_extra_child().set_text("")
+                self.get_extra_child().set_property("placeholder-text", "Try Again...")
+                self.present()
+
+    def finish(self):
+        for i in (self.stdout_channel, self.stdin_channel):
+            if i: i.shutdown(True)
+        if self.invocation: self.invocation.return_value(None)
+        self.invocation = None
+
+    @staticmethod
+    def handle_dbus(dbus=None, connection=None, sender=None, path=None, i="", m="", p=None, inv=None):
+        if m == "BeginAuthentication": return Authorize(inv, p)
+        if m == "CancelAuthentication":
+            for it in Gtk.Window.get_toplevels():
+                if isinstance(it.get_child(), Authorize) and it.get_child().cookie == p[0]: it.get_child().close()
+
+class CancellablePrompt(Prompt):
+    handle = GObject.Property(type=str)
+    def __init__(self, *args, handle="", **kwargs):
+        super().__init__(*args, **kwargs, confirm_callback=False, callback=self.__class__.try_do)
+        self.handle = handle
+        if self.handle: Request.export(self.handle, self.close)
+
+    @staticmethod
+    def try_do(self, r):
+        try: self.do(r)
+        except Exception as e: print("CancellablePrompt:", e)
+        if self.handle: Request.remove(self.handle)
+
+class ScreenCast(CancellablePrompt):
+    niri_sessions = {}
+    sessions = {}
+    session = GObject.Property(type=str)
+    session_handle = GObject.Property(type=str)
+    video_selected = GObject.Property(type=str)
+    audio_selected = GObject.Property(type=str)
+    file = GObject.Property(type=Gio.File)
+    show_cursor = GObject.Property(type=bool, default=True)
+    gpu_screen_recorder = GObject.Property(type=bool, default=False)
+    invocation = GObject.Property(type=Gio.DBusMethodInvocation)
+    options = GObject.Property(type=object)
+    iface = "org.gnome.Mutter.ScreenCast"
+
+    def __init__(self, inv=None, p=None, audio_select=False):
+        super().__init__(handle=p[0] if p else "")
+        self.session_handle = p[1] if p else ""
+        self.invocation = inv
+        self.audios, self.videos = {}, {}
+        box = Gtk.ListBox(css_classes=("boxed-list", "main"), selection_mode=Gtk.SelectionMode.NONE)
+        self.set_properties(heading="Start Share" if self.invocation else "Start Recording", extra_child=box)
+        if not self.invocation:
+            self.gpu_screen_recorder = ImageCopy.get_gsr()
+        if self.gpu_screen_recorder: Task(self.__class__.get_gsr_options, self).start()
+        else:
+            if not self.invocation:
+                self.videos["None"] = False
+            toplevels = getattr(ImageCopy, "toplevel_capture", False)
+            if hasattr(ImageCopy, "manager"):
+                for i in Gdk.Display.get_default().get_monitors():
+                    self.videos[i.get_connector()] = i
+                if layer_shell:
+                    self.videos["Select Area"] = "Select Area"
+            if self.invocation and p and hasattr(self.__class__, "iface") and hasattr(Niri, "connection"):
+                self.session = self.__class__.niri_sessions[p[1]]
+                self.videos["niri Dynamic Cast Target"] = 1
+                toplevels = True
+            if toplevels and ImageCopy.toplevel_list.name.decode() in Wayland.interfaces:
+                o = Wayland.registry.bind(ImageCopy.toplevel_list, *Wayland.interfaces[ImageCopy.toplevel_list.name.decode()])
+                o.screencast = self
+                o.dispatcher(ImageCopy.toplevel_list_dispatcher)
+                Gdk.Display.get_default().sync()
+                o.stop()
+            Task.invoke(self.setup, audio_select)
+
+    def setup(self, audio_select):
+        if not self.videos: return self.invocation.return_value(GLib.Variant("(ua{sv})", (1, {}))) if self.invocation else None
+        select = Adw.ComboRow(title="Video Source", model=Gtk.StringList.new(tuple(self.videos.keys())))
+        box = self.get_extra_child()
+        box.append(select)
+        if audio_select:
+            if not hasattr(self, "audios"):
+                self.audios = {"None": False}
+            if not self.gpu_screen_recorder:
+                lines = GLib.spawn_command_line_sync("wpctl status")[1].decode().splitlines()
+                result = []
+                for n, i in enumerate(lines):
+                    if i == "Audio":
+                        lines = lines[n:]
+                        break
+                group = ""
+                previous = ""
+                for n, i in enumerate(lines):
+                    if not i: break
+                    if not group:
+                        group = i if i.endswith(("Sinks:", "Sources:", "Streams:")) else ""
+                        continue
+                    if len(i) == 4:
+                        group = ""
+                        continue
+                    if ". input_" in i or ". output_" in i: continue
+                    if ". monitor_" in i:
+                        if previous:
+                            previous = ""
+                        continue
+                    if previous: result.append(previous)
+                    previous = i.split(".", 1)[0].replace("│", "").replace("*", "").strip()
+                if previous: result.append(previous)
+                for _id in result:
+                    r = GLib.spawn_command_line_sync(f"wpctl inspect {_id}")[1].decode()
+                    if not "object.serial = \"" in r: continue
+                    name = ""
+                    for i in ("media.name", "node.description"):
+                        if not name and i in r:
+                            name = r.split(f"{i} = \"", 1)[-1].split("\n", 1)[0].split("\"", 1)[0]
+                    if "port.group = \"capture\"" in r:
+                        name = "(Input) " + name
+                    if name:
+                        self.audios[unique_name(name, self.audios)] = r.split("object.serial = \"", 1)[-1].split("\"", 1)[0]
+            s = Adw.ComboRow(title="Audio Source", model=Gtk.StringList.new(tuple(self.audios.keys())))
+            s.bind_property("selected-item", self, "audio-selected", DEFAULT_BIND, string_bind)
+            box.append(s)
+        r = Adw.SwitchRow(title="Show Cursor", active=True)
+        r.bind_property("active", self, "show-cursor", DEFAULT_BIND)
+        box.append(r)
+        if not self.invocation:
+            select.bind_property("selected", r, "visible", DEFAULT_BIND, bool_bind)
+            r = Adw.ActionRow(title="Save Location")
+            b = Button(callback=self.__class__.select_file, icon_name="folder-open", valign=Gtk.Align.CENTER, bindings=[(self, "file", None, "tooltip-text", None, self.__class__.file_bind)])
+            r.add_suffix(b)
+            box.append(r)
+        select.bind_property("selected-item", self, "video-selected", DEFAULT_BIND, string_bind)
+        self.present()
+
+    @staticmethod
+    def get_gsr_options(self):
+        r = str_to_list(GLib.spawn_command_line_sync(f"{ImageCopy.gsr} --list-capture-options")[1].decode())
+        self.videos["Select Area"] = "Select Area"
+        self.videos.update(dict((i.split("|", 1)[0], i.split("|", 1)[0]) for i in r if not i in ("portal", "region")))
+        self.audios = {"None": False}
+        for i in ("audio-devices", "application-audio"):
+            r = str_to_list(GLib.spawn_command_line_sync(f"{ImageCopy.gsr} --list-{i}")[1].decode())
+            for it in r:
+                if it.startswith(("default_output", "default_input")): continue
+                self.audios[it.split("|", 1)[-1]] = ("device:" if "device" in i else "app:") + it.split("|", 1)[0]
+        Task.invoke(self.setup, True)
+
+    @staticmethod
+    def file_bind(b, v): return v.get_uri() if v else "Select File"
+
+    def get_filename(self): return f"{GLib.DateTime.new_now_local().format('%Y%m%d%H%M%S')}.mp4"
+
+    @staticmethod
+    def select_file(b):
+        self = b.get_ancestor(ScreenCast)
+        if not self: return
+        Gtk.FileDialog(initial_name=self.get_filename()).save(self.get_root(), None, self.__class__.do_select_file, self)
+
+    @staticmethod
+    def do_select_file(d, r, self):
+        try:
+            self.file = d.save_finish(r)
+        except:
+            self.file = None
+
+    @staticmethod
+    def stop_recording(d):
+        if getattr(d, "pipeline", None):
+            pipeline = d.pipeline
+            del d.pipeline
+            p = pipeline.get_by_name("PipeWire")
+            if p: p.send_event(Gst.Event.new_eos())
+            if getattr(pipeline, "source", False): pipeline.source.emit("end-of-stream")
+            bus = pipeline.get_bus()
+            bus.add_signal_watch()
+            bus.connect("message", ScreenCast.do_finish, pipeline)
+            pipeline.send_event(Gst.Event.new_eos())
+        if hasattr(d, "pid"): GLib.spawn_command_line_sync(f"pkill -SIGINT -p {d.pid}")
+
+    @staticmethod
+    def do_finish(bus, message, pipeline):
+        if message.type == Gst.MessageType.ERROR or message.type == Gst.MessageType.EOS: Task.invoke(pipeline.set_state, Gst.State.NULL)
+
+    @staticmethod
+    def do_pick(arg, self):
+        if arg == False: self.__class__.do(self, "cancel")
+        else: self.__class__.do(self, "confirm", tuple(arg))
+
+    def do(self, c, result=False):
+        if c != "confirm":
+            if self.invocation: self.invocation.return_value(GLib.Variant("(ua{sv})", (1, {})))
+            return
+        vs = self.videos[self.video_selected]
+        if vs == "Select Area" and not result:
+            Selector(function_data=self, function=self.__class__.do_pick)
+            return
+        if not self.invocation:
+            if self.video_selected == "None" and self.videos["None"] == False and self.audio_selected == "None" and self.audios["None"] == False: return
+            plaunch = ""
+            video = audio = False
+            if vs:
+                if result:
+                    video, x, y, w, h = result
+                else:
+                    video, x, y, w, h = vs, -1, -1, 0, 0
+                if isinstance(video, Gdk.Monitor):
+                    g = video.get_geometry()
+                    crop = ImageCopy.get_crop(W=g.width, H=g.height, w=w, h=h, x=x, y=y)
+                    plaunch += f" appsrc emit-signals=false format=time do-timestamp=true is-live=true max-buffers=4 block=false name=Source ! video/x-raw,format={ImageCopy.get_default_format()},width={g.width},height={g.height},framerate=60/1 !{crop} vapostproc ! vah264enc ! h264parse ! queue ! Mux."
+            if self.audios.get(self.audio_selected, False) != False:
+                audio = self.audios[self.audio_selected]
+                plaunch += " pipewiresrc name=PipeWire do-timestamp=true provide-clock=false ! queue max-size-time=500000000 ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2 ! opusenc bitrate-type=cbr bitrate=128000 frame-size=20 ! queue ! Mux."
+            if not (audio or video): return
+            p = Prompt(heading="Stop Recording", callback=self.__class__.stop_recording)
+            p.remove_response("cancel")
+            plaunch = plaunch.strip() + f" mp4mux name=Mux ! filesink name=File"
+            if self.gpu_screen_recorder:
+                command = ["/bin/flatpak-spawn", "--host"] if FLATPAK_ID else []
+                command.extend([ImageCopy.gsr, "-cursor", "yes" if self.show_cursor else "no", "-o", self.file.get_path() if self.file else self.get_filename()])
+                if video:
+                    if isinstance(video, Gdk.Monitor): command.extend(["-w", f"{w}x{h}+{x}+{y}"])
+                    else: command.extend(["-w", video])
+                if audio: command.extend(["-a", audio])
+                success, p.pid, stdin_fd, stdout_fd, stderr_fd = GLib.spawn_async_with_pipes(argv=command, flags=GLib.SpawnFlags.DEFAULT | GLib.SpawnFlags.CHILD_INHERITS_STDERR)
+            else:
+                pipeline = p.pipeline = Gst.parse_launch(plaunch.strip())
+                pipeline.get_by_name("File").set_property("location", self.file.get_uri() if self.file else self.get_filename())
+                if audio: pipeline.get_by_name("PipeWire").set_property("target-object", audio)
+                if video:
+                    pipeline.source = pipeline.get_by_name("Source")
+                    pipeline.args = {"source": video, "cursor": self.show_cursor}
+                    frame = ImageCopy.capture_frame(**pipeline.args)
+                    if not frame: return
+                    frame.prompt = p
+                    frame.do_ready = self.__class__.recording_do_ready
+                    pipeline.set_state(Gst.State.PLAYING)
+                else: pipeline.set_state(Gst.State.PLAYING)
+            p.present()
+        elif not isinstance(vs, Gdk.Monitor) and not result and self.session and hasattr(Niri, "connection") and SESSION:
+            b = Gio.DBusProxy.new_sync(SESSION, Gio.DBusProxyFlags.NONE, None, self.__class__.iface, self.session, self.__class__.iface + ".Session", None)
+            SESSION.signal_subscribe(None, self.__class__.iface + ".Stream", "PipeWireStreamAdded", b.call_sync("RecordWindow", GLib.Variant("(a{sv})", ({"window-id": GLib.Variant("t", int(vs)), "cursor-mode": GLib.Variant("u", int(self.show_cursor))}, )), Gio.DBusCallFlags.NONE, 5000, None)[0], None, Gio.DBusSignalFlags.NONE, self.__class__.stream_added, self)
+            b.call_sync("Start", None, Gio.DBusCallFlags.NONE, 5000, None)
+        else:
+            vs = result or vs
+            for k, v in ScreenCast.sessions.items():
+                if v["Video Source"] == vs and v["Show Cursor"] == self.show_cursor:
+                    ScreenCast.sessions[k]["Invocations"].append(self.invocation)
+                    ScreenCast.sessions[k]["Handles"].append(self.session_handle)
+                    return
+            n = str(len(tuple(ScreenCast.sessions.keys())))
+            ScreenCast.sessions[n] = {
+                "Invocations": [self.invocation],
+                "Handles": [self.session_handle],
+                "Video Source": vs,
+                "Show Cursor": self.show_cursor
+            }
+            if self.audios:
+                ScreenCast.sessions[n]["Audio Source"] = self.audios[self.audio_selected]
+            a = vs if isinstance(vs, tuple) else False
+            ScreenCast.sessions[n]["Args"] = args = {"source": a[0] if a else vs, "x": a[1] if a else -1, "y": a[2] if a else -1, "w": a[3] if a else 0, "h": a[4] if a else 0, "cursor": self.show_cursor}
+            frame = ImageCopy.capture_frame(source=args["source"], cursor=args["cursor"])
+            if not frame: return
+            frame.session, frame.do_ready = n, self.__class__.share_do_ready
+
+    @staticmethod
+    def recording_do_ready(proxy, buffer):
+        if not hasattr(proxy, "prompt"): return
+        if not hasattr(proxy.prompt, "pipeline"):
+            del proxy.prompt
+            return
+        pipeline = proxy.prompt.pipeline
+        pipeline.source.emit("push-buffer", buffer)
+        ImageCopy.new_frame(proxy, ImageCopy.capture_frame(add_user=False, **pipeline.args))
+
+    @staticmethod
+    def share_do_ready(proxy, buffer):
+        if not hasattr(proxy, "session"): return
+        if not proxy.session in ScreenCast.sessions:
+            Task.invoke(ImageCopy.destroy_object, proxy)
+            return
+        args = ScreenCast.sessions[proxy.session]["Args"]
+        if not ScreenCast.sessions[proxy.session].get("Pipeline", False):
+            crop = ImageCopy.get_crop(W=proxy.width, H=proxy.height, w=args["w"], h=args["h"], x=args["x"], y=args["y"])
+            p = f"appsrc emit-signals=false format=time do-timestamp=true is-live=true max-buffers=4 block=false name=Source ! video/x-raw,format={ImageCopy.get_default_format()},width={proxy.width},height={proxy.height},framerate=60/1 !{crop} vapostproc ! pipewiresink name=PipeWire client_name=shell-screencast-{proxy.session} mode=2"
+            ScreenCast.sessions[proxy.session]["Pipeline"] = pipeline = Gst.parse_launch(p)
+            pipeline.session = proxy.session
+            pipeline.pipewire, pipeline.source = [pipeline.get_by_name(i) for i in ("PipeWire", "Source")]
+            pipeline.set_bus(None)
+            pipeline.set_properties(async_handling=False, message_forward=False)
+            pipeline.set_state(Gst.State.PLAYING)
+        pipeline = ScreenCast.sessions[proxy.session]["Pipeline"]
+        pipeline.source.emit("push-buffer", buffer)
+        if not hasattr(pipeline, "node_id"):
+            try:
+                pipeline.node_id = int(GLib.spawn_command_line_sync("wpctl status")[1].decode().split(". " + pipeline.pipewire.get_property("client-name"), 1)[0].rsplit(" ", 1)[-1])
+                pipeline.serial = int(GLib.spawn_command_line_sync(f"wpctl inspect {pipeline.node_id}")[1].decode().split("object.serial = \"", 1)[-1].split("\"", 1)[0])
+            except: pass
+        if hasattr(pipeline, "node_id") and ScreenCast.sessions[proxy.session]["Invocations"]:
+            for i in [i for i in ScreenCast.sessions[proxy.session]["Invocations"]]:
+                if ScreenCast.sessions[proxy.session].get("Audio Source", False): pass
+                i.return_value(GLib.Variant("(ua{sv})", (0, { "streams": GLib.Variant("a(ua{sv})", [(pipeline.node_id, {"position": GLib.Variant("(ii)", (0, 0)), "size": GLib.Variant("(ii)", (1000, 1000)), "source_type": GLib.Variant("u", 1)}), ]), "persist_mode": GLib.Variant("u", 0), "pipewire-serial": GLib.Variant("t", pipeline.serial)})))
+                ScreenCast.sessions[proxy.session]["Invocations"].remove(i)
+        ImageCopy.new_frame(proxy, ImageCopy.capture_frame(add_user=False, source=args["source"], cursor=args["cursor"]))
+
+    @staticmethod
+    def stream_added(conn, sender, signal, path, iface, params, self): self.invocation.return_value(GLib.Variant("(ua{sv})", (0, { "streams": GLib.Variant("a(ua{sv})", [(params[0], {"size": GLib.Variant("(ii)", (1, 1)), "source_type": GLib.Variant("u", 2)}), ]), "persist_mode": GLib.Variant("u", 0), })))
+
+class AccessDialog(CancellablePrompt):
+    invocation = GObject.Property(type=Gio.DBusMethodInvocation)
+    def __init__(self, inv, handle, app_id, parent_window, title, subtitle, body, options):
+        super().__init__(handle=handle, responses=(options.get("deny_label", "cancel"), options.get("grant_label", "confirm")), heading=title, body=f"{subtitle}\n{body}".strip() if body or subtitle else None)
+        self.invocation = inv
+        self.present()
+
+    def do(self, r):
+        if not self.invocation: return
+        if r == self.responses[0]: self.invocation.return_value(GLib.Variant("(ua{sv})", (1, {})))
+        else: self.invocation.return_value(GLib.Variant("(ua{sv})", (0, {})))
+        self.invocation = None
+
+class AccountPrompt(CancellablePrompt):
     invocation = GObject.Property(type=Gio.DBusMethodInvocation)
     def __init__(self, inv, handle="", app_id="", window="", options=None, reason=""):
         if options:
             reason = reason or options.get("reason", "")
         reason = f"{app_id or 'unspecified'} asks for your account's ID, name and avatar\n{reason or '... no reason'}".strip("\n").strip()
-        super().__init__(callback=self.__class__.do, confirm_callback=False, heading="Account Information Request", body=reason, responses=("deny", "share"))
+        super().__init__(handle=handle, heading="Account Information Request", body=reason, responses=("deny", "share"))
         self.invocation = inv
         self.present()
 
-    @staticmethod
     def do(self, r):
         if not self.invocation: return
         if r == self.responses[0]: self.invocation.return_value(GLib.Variant("(ua{sv})", (1, {})))
         else: self.invocation.return_value(GLib.Variant("(ua{sv})", (0, {"id": get_variant(GLib.getenv("USER") or "user"), "name": get_variant(Settings.user_name or GLib.getenv("USER") or "user"), "image": get_variant(Settings.user_avatar)})))
         self.invocation = None
 
-class PrepareInstallPrompt(Prompt):
+class PrepareInstallPrompt(CancellablePrompt):
     invocation = GObject.Property(type=Gio.DBusMethodInvocation)
     original_icon = GObject.Property(type=object)
     install_icon = GObject.Property(type=object)
     install_name = GObject.Property(type=str)
-    def __init__(self, inv, p):
-        handle, app_id, parent_window, name, icon, options = p
+    def __init__(self, inv, handle, app_id, parent_window, name, icon, options):
         modal = options.get("modal", False)
         launcher_type = options.get("launcher_type", 1)
         launcher_type = "Application" if launcher_type == 1 else "WebApp" if launcher_type == 2 else "Unknown"
@@ -4437,7 +4536,7 @@ class PrepareInstallPrompt(Prompt):
         editable_name = options.get("editable_name", True)
         editable_icon = options.get("editable_icon", False)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        super().__init__(extra_child=box, callback=self.__class__.do, confirm_callback=False, heading=f"Install {launcher_type}" + (f"\n({target})" if target else ""))
+        super().__init__(extra_child=box, handle=handle, heading=f"Install {launcher_type}" + (f"\n({target})" if target else ""))
         self.add_css_class("prepare-install")
         image = Gtk.Image(pixel_size=192)
         self.bind_property("install_icon", image, "name", DEFAULT_BIND, self.__class__.set_icon)
@@ -4477,7 +4576,6 @@ class PrepareInstallPrompt(Prompt):
         try: image.set_from_gicon(Gio.BytesIcon.deserialize(v))
         except: image.set_from_icon_name("image-missing-symbolic")
 
-    @staticmethod
     def do(self, r):
         if not self.invocation: return
         if r == self.responses[0]: self.invocation.return_value(GLib.Variant("(ua{sv})", (1, {})))
@@ -4485,18 +4583,63 @@ class PrepareInstallPrompt(Prompt):
         self.install_icon = self.invocation = None
         self.install_name = ""
 
-def call(dbus=None, _c=None, _s=None, _o=None, i="", m="", p=None, inv=None):
-    p = p or []
-    if i == INFO["ID"]:
+class Request:
+    requests = {}
+
+    @staticmethod
+    def export(handle, cancel):
+        if handle in Request.requests: return
+        if not hasattr(Request, "info"):
+            Request.info = next((i for i in PORTAL_DBUS.node_info.interfaces if i.name == f"{PT_ID}.Request"), False)
+        rid = PORTAL_DBUS.bus.register_object(handle, Request.info, Request.call, None, None)
+        Request.requests[handle] = {"id": rid, "cancel": cancel}
+
+    @staticmethod
+    def call(connection=None, sender=None, path=None, i="", m="", p=None, inv=None): return Portal.handle_dbus(i=i, path=path, inv=inv, m=m, p=p)
+
+    @staticmethod
+    def get(path): return Request.requests.get(path, None)
+
+    @staticmethod
+    def remove(handle):
+        request = Request.requests.pop(handle, None)
+        if request: PORTAL_DBUS.bus.unregister_object(request["id"])
+
+class Session:
+    sessions = {}
+
+    @staticmethod
+    def export(handle, cancel):
+        if handle in Session.sessions: return
+        if not hasattr(Session, "info"):
+            Session.info = next((i for i in PORTAL_DBUS.node_info.interfaces if i.name == f"{PT_ID}.Session"), False)
+        rid = PORTAL_DBUS.bus.register_object(handle, Session.info, Session.call, None, None)
+        Session.sessions[handle] = {"id": rid, "cancel": cancel}
+
+    @staticmethod
+    def call(connection=None, sender=None, path=None, i="", m="", p=None, inv=None): return Portal.handle_dbus(i=i, path=path, inv=inv, m=m, p=p)
+
+    @staticmethod
+    def get(path): return Session.sessions.get(path, None)
+
+    @staticmethod
+    def remove(handle):
+        session = Session.sessions.pop(handle, None)
+        if session: PORTAL_DBUS.bus.unregister_object(session["id"])
+
+class App(App):
+    @staticmethod
+    def handle_dbus(dbus=None, connection=None, sender=None, path=None, i="", m="", p=None, inv=None):
+        if i == PL_ID: return Player.handle_dbus(dbus=dbus, connection=connection, sender=sender, path=path, i=i, m=m, p=p, inv=inv)
         if m == "CursorButton" and getattr(Pointer, "instance", False): Pointer.send(key=p[0], hold=p[1], release=p[2])
         if m == "CursorScroll" and getattr(Pointer, "instance", False): Pointer.scroll(x=p[0], y=p[1])
         if m == "CursorMotion" and getattr(Pointer, "instance", False): Pointer.mouse(x=p[0], y=p[1])
         if m == "ScreenRecord": ScreenCast(audio_select=True)
         if m == "Settings": Settings.do()
-        if Gst and m == "Screenshot" and layer_shell: return Screenshot.do(data=inv or False)
-        if Gst and m == "ScreenshotArea" and layer_shell: return Screenshot.do(data=inv or False, interactive=True)
+        if m == "Screenshot" and layer_shell: return Screenshot.do(data=inv or False)
+        if m == "ScreenshotArea" and layer_shell: return Screenshot.do(data=inv or False, interactive=True)
         if m == "Notifications": Notifications.do()
-        if m == "Exit": exit()
+        if m == "Exit": sys.exit()
         if m == "Key" and getattr(Keyboard, "instance", False): Keyboard.send(key=p[0], hold=p[1], release=p[2])
         if m == "Keyboard" and getattr(Keyboard, "instance", False): Keyboard.do()
         if m == "Clipboard" and getattr(Clipboard, "instance", False): Clipboard.do()
@@ -4507,196 +4650,166 @@ def call(dbus=None, _c=None, _s=None, _o=None, i="", m="", p=None, inv=None):
             if item and "text/plain;charset=utf-8" in item.mimetypes:
                 v = item.mimetypes["text/plain;charset=utf-8"].decode()
             return inv.return_value(GLib.Variant("(s)", (v,))) if inv else None
-        if m == "Apps" and layer_shell: Apps.do()
+        if m == "Apps": Apps.do()
         if m == "Player": Player.do()
         if m == "ColorScheme":
             Settings.color_scheme = Adw.ColorScheme.FORCE_DARK if Settings.color_scheme == Adw.ColorScheme.FORCE_LIGHT else Adw.ColorScheme.FORCE_LIGHT
-        if Gst and m == "Palette" and hasattr(ImageCopy, "manager") and layer_shell: Palette.do()
+        if m == "Palette": Palette.do()
         return inv.return_value(None) if inv else None
-    if i == NF_ID:
-        if m == "CloseNotification": return inv.return_value(None) if inv else None
-        if m == "GetServerInformation": return inv.return_value(GLib.Variant("(ssss)", ("Shell", "Shell", "1", "1.3"))) if inv else None
-        if m == "GetCapabilities": return inv.return_value(GLib.Variant("(as)", (("actions", "body", "body-images", "body-markup", "icon-static", "persistence"),))) if inv else None
-        if m == "Notify": return Task(Notifications.add, inv, p).start() if inv else None
-    if m == "AddNotification":
-        app_id, id, notification = p
-        Notification(app=app_id, title=notification.get("title", None), description=notification.get("body", None), display=notification.get("icon", {}))
-        return inv.return_value(None) if inv else None
-    if m == "RemoveNotification": return inv.return_value(None) if inv else None
-    if i == PLAYER_IFACE:
-        if not Player.players: return
-        if m == "Shift":
-            Player.current += 1
-            if Player.current >= len(Player.players):
-                Player.current = 0
-        if m == "Unshift":
-            if Player.current == 0:
-                Player.current = len(Player.players) - 1
-            else:
-                Player.current -= 1
-        else:
-            while Player.current >= len(Player.players):
-                Player.current -= 1
-        current = Player.players[Player.current]
-        if m.startswith(("Play", "Pause", "Next", "Previous")) and SESSION:
-            try: Gio.DBusProxy.new_sync(SESSION, Gio.DBusProxyFlags.NONE, None, current, Player.path, Player.player_iface, None).call_sync(m, None, Gio.DBusCallFlags.NONE, 5000, None)
-            except Exception as e:
-                if " is not available now" in str(e): pass
-                else: print(e)
-        elif not "hift" in m and SESSION:
-            props = Gio.DBusProxy.new_sync(SESSION, Gio.DBusProxyFlags.NONE, None, current, Player.path, Player.properties_iface, None).call_sync("GetAll", GLib.Variant("(s)", (Player.player_iface,)), Gio.DBusCallFlags.NONE, 5000, None)
-            if not props: return
-            props = props[0]
-            if m == "Shuffle" and m in props: Gio.DBusProxy.new_sync(SESSION, Gio.DBusProxyFlags.NONE, None, current, Player.path, Player.properties_iface, None).call_sync("Set", GLib.Variant("(ssv)", (Player.player_iface, m, GLib.Variant("b", not props[m]))), Gio.DBusCallFlags.NONE, 5000, None)
-            if m.startswith("Volume") and "Volume" in props: Gio.DBusProxy.new_sync(SESSION, Gio.DBusProxyFlags.NONE, None, current, Player.path, Player.properties_iface, None).call_sync("Set", GLib.Variant("(ssv)", (Player.player_iface, "Volume", GLib.Variant("d", props["Volume"] + (-0.05 if m.endswith("Down") else +0.05)))), Gio.DBusCallFlags.NONE, 5000, None)
-            if m == "Loop" and "LoopStatus" in props:
-                l = tuple(Player.loops.keys())
-                n = l.index(props["LoopStatus"]) + 1
-                if n >= len(l):
-                    n = 0
-                Gio.DBusProxy.new_sync(SESSION, Gio.DBusProxyFlags.NONE, None, current, Player.path, Player.properties_iface, None).call_sync("Set", GLib.Variant("(ssv)", (Player.player_iface, "LoopStatus", GLib.Variant("s", l[n]))), Gio.DBusCallFlags.NONE, 5000, None)
-            if m in ("Backward", "Forward") and "Position" in props and props.get("CanSeek", True) == True:
-                track = props.get("Metadata", {}).get("mpris:trackid", "/org/mpris/MediaPlayer2/TrackList/NoTrack")
-                v = props["Position"] + (-2e6 if m == "Backward" else 2e6)
-                p = Gio.DBusProxy.new_sync(SESSION, Gio.DBusProxyFlags.NONE, None, current, Player.path, Player.player_iface, None)
-                if track.startswith("/org/mpris/MediaPlayer2/webkit"): p.call_sync("Seek", GLib.Variant("(x)", (v,)), Gio.DBusCallFlags.NONE, 5000, None)
-                else: p.call_sync("SetPosition", GLib.Variant("(ox)", ("/org/mpris/MediaPlayer2/TrackList/NoTrack", v)), Gio.DBusCallFlags.NONE, 5000, None)
-        Task.invoke(Player.update)
-        return inv.return_value(None) if inv else None
-    if Gst and m == "CreateSession":
-        if hasattr(Niri, "connection") and SESSION and hasattr(ScreenCast, "iface"):
-            try:
-                r = Gio.DBusProxy.new_sync(SESSION, Gio.DBusProxyFlags.NONE, None, ScreenCast.iface, DBUS.path(ScreenCast.iface), ScreenCast.iface, None).call_sync("CreateSession", GLib.Variant("(a{sv})", ({},)), Gio.DBusCallFlags.NONE, 5000, None)[0]
-                ScreenCast.niri_sessions[p[1]] = r
-                return inv.return_value(GLib.Variant("(ua{sv})", (0, {"session_id": GLib.Variant("s", r)})))
-            except Exception as e: del ScreenCast.iface
-        if hasattr(ImageCopy, "manager"): return inv.return_value(GLib.Variant("(ua{sv})", (0, {"session_id": GLib.Variant("s", "1")})))
-    if Gst and m == "SelectSources": return inv.return_value(GLib.Variant("(ua{sv})", (0, {})))
-    if Gst and m == "Start": return ScreenCast(inv, p)
-    if m == "AccessDialog": return AccessDialog(inv, *p)
-    if Gst and m == "Screenshot": return Screenshot.do(data=inv or False, interactive=p[-1].get("interactive", False))
-    if Gst and m == "PickColor" and layer_shell: return Palette.do(data=inv or False)
-    if AUTHENTICATION_AGENT:
-        if m == "BeginAuthentication": return Authorize(inv, p)
-        if m == "CancelAuthentication":
-            for it in Gtk.Window.get_toplevels():
-                if isinstance(it.get_child(), Authorize) and it.get_child().cookie == p[0]: it.get_child().close()
-            return
-    if m in ("OpenFile", "SaveFile", "SaveFiles"): return PortalFileDialog(inv, m, p)
-    if m == "CreateMonitor": return inv.return_value(GLib.Variant("(u)", (1,)))
-    if m == "ChooseApplication" and Apps.instance:
-        if p[-1].get("content_type", "") == "application/x-executable":
-            f = p[-1].get("uri", "").split("file://", 1)[-1]
-            GLib.spawn_command_line_async(f'sh -c "cd \"{get_parent(f)}\" && exec \"./{basename(f)}\""')
-            return inv.return_value(GLib.Variant("(ua{sv})", (0, {"choice": GLib.Variant("s", "executed"), "activation_token": GLib.Variant("s", p[-1]["activation_token"])})))
-        else: return AppChooser(inv, *p)
-    if m == "UpdateChoices":
-        Apps.update()
-        return inv.return_value(None) if inv else None
-    if m == "SetWallpaperURI":
-        s = p[-1].get("set-on", "")
-        t = "lockscreen and background" if s == "both" else s
-        Notification(title="Set Wallpaper Request", description=f"{p[1] or 'unspecified'} has asked to set the following URI as a wallpaper of {t}\n{p[3]}")
-        return inv.return_value(GLib.Variant("(u)", (1, ))) if inv else None
-    if m == "GetUserInformation":
-        AccountPrompt(inv, *p)
-        return
-    if m == "ComposeEmail":
-        options = p[-1]
-        cc = options.get("cc", "")
-        bcc = options.get("bcc", "")
-        params = [f"cc={','.join(cc)}"] if cc else []
-        if bcc: params.append(f"bcc={','.join(bcc)}")
-        subject = options.get("subject", "")
-        body = options.get("body", "")
-        params += [f"subject={GLib.Uri.escape_string(subject)}", f"body={GLib.Uri.escape_string(body)}"]
-        attachments = options.get("attachment_fds", "")
-        if attachments:
-            params += [f"attachment={GLib.Uri.escape_string(a)}" for a in attachments]
-        address = options.get("address", "")
-        uri = "mailto:" + ",".join(([address] if address else []) + list(options.get("addresses", []))) + "?" + "&".join(params)
-        c = AppChooser(function=AppChooser.close_email, uri=uri, content_type="x-scheme-handler/mailto")
-        c.i = inv
-        return
-    if m == "PrepareInstall":
-        PrepareInstallPrompt(inv, p)
-        return
-    if m == "RequestInstallToken": return inv.return_value(GLib.Variant("(ua{sv})", (1, {})))
-    if m == "ReadAll":
-        d = {}
-        p = p[0]
-        if GLib.getenv("GSETTINGS") and any(i == "org.gnome.*" for i in p):
-            for i in Gio.SettingsSchemaSource.get_default().list_schemas(False)[0]:
-                if i.startswith("org.gnome."):
-                    s = Gio.Settings.new(i)
-                    d[i] = {}
-                    for it in s.get_property("settings-schema").list_keys():
-                        d[i][it] = s.get_value(it)
-        for i in Settings.list_properties():
-            if i.owner_type.pytype == Settings.__class__:
-                v = Settings.do_changed(Settings, i.get_name(), True)
-                if v != None:
-                    d.setdefault(v[0], {})
-                    d[v[0]][v[1]] = v[2]
-        return inv.return_value(GLib.Variant("(a{sa{sv}})", (d,)))
-    if m == "Read":
-        if p[1] in ("cursor-theme", "gtk-cursor-theme-name"):
-            v = get_variant(GLib.getenv("XCURSOR_THEME"))
-        elif p[1] in ("cursor-size", "gtk-cursor-theme-size"):
-            v = get_variant(GLib.getenv("XCURSOR_SIZE"))
-        else:
-            v = Settings.do_changed(Settings, p[1], True)
-            if v == None:
-                print("Setting", p, "not found")
-                v = get_variant("")
-            else:
-                v = v[2]
-        if inv: return inv.return_value(GLib.Variant("(v)", (v,)))
-        else: return v
-    if m == "Get":
-        v = None
-        if p[1] == "AvailableTargets":
-            v = 1 | 4
-        if p[1] == "AvailableSourceTypes":
-            v = 1 | 2 | 4
-        if p[1] == "AvailableCursorModes":
-            v = 2
-        if p[1] == "SupportedOptions":
-            v = {}
-        if p[1] == "SupportedLauncherTypes":
-            v = 1 | 2
-        if i.endswith("Lockdown"):
-            v = getattr(Settings, p[1].replace("-", "_"), True)
-        if p[1] == "version":
-            v = 0
+
+    @staticmethod
+    def file_open(a, files, *_):
+        if Apps.instance:
+            for i in files: AppChooser(options={"uri": (("file://" if not i.startswith(("file://", "https://", "http://")) else "") + i) if isinstance(i, str) else i.get_uri(),})
+
+    @staticmethod
+    def shutdown(a):
+        App.default.data.data.close()
+        for i in [i for i in Controller.list]: i.remove()
+
+class Portal:
+    @staticmethod
+    def handle_dbus(dbus=None, connection=None, sender=None, path=None, i="", m="", p=None, inv=None):
+        if m == "Close":
+            for c in (Request, Session):
+                if i.endswith(c.__name__):
+                    inv.return_value(GLib.Variant("()", ()))
+                    o = c.get(path)
+                    if o and o["cancel"]: o["cancel"]()
+                    c.remove(path)
+                    return
+        if m == "AddNotification":
+            app_id, id, notification = p
+            Notification(app=app_id, title=notification.get("title", None), description=notification.get("body", None), display=notification.get("icon", {}))
+            return inv.return_value(None) if inv else None
+        if m == "RemoveNotification": return inv.return_value(None) if inv else None
+        if m == "CreateSession":
+            session, response, results, cancel = p[1], 1, {}, None
             if i.endswith("ScreenCast"):
-                v = 5 if hasattr(Niri, "connection") else 6
-            elif i.endswith(("Settings", "Notification")):
-                v = 2
-            elif i.endswith("Screenshot"):
-                v = 3
-            elif i.endswith("DynamicLauncher"):
-                v = 1
-        v = GLib.Variant(dbus.interfaces[p[0]]["properties"][p[1]]["type"], v)
-        if inv: return inv.return_value(GLib.Variant("(v)", (v,)))
-        else: return v
-    if m == "GetAll":
-        if p[0] in dbus.interfaces and dbus.interfaces[p[0]].get("properties", False):
-            s = dict((it, call(dbus, None, None, None, p[0], "Get", (p[0], it), None)) for it in dbus.interfaces[p[0]]["properties"])
-        else:
-            s = {}
-        if inv: return inv.return_value(GLib.Variant("(a{sv})", (s, )))
-        else: return GLib.Variant("a{sv}", s)
-    if not (isinstance(i, str) and i.endswith("Inhibit")): print(i, m, p)
-    if inv: inv.return_value(None)
-
-def file_open(a, files, *_):
-    if Apps.instance:
-        for i in files: AppChooser(options={"uri": (("file://" if not i.startswith(("file://", "https://", "http://")) else "") + i) if isinstance(i, str) else i.get_uri(),})
-
-def shutdown(a):
-    App.default.data.data.close()
-    for i in [i for i in Controller.list]: i.remove()
+                response = 0 if hasattr(ImageCopy, "manager") else 1
+                if hasattr(Niri, "connection") and SESSION and hasattr(ScreenCast, "iface"):
+                    try:
+                        r = Gio.DBusProxy.new_sync(SESSION, Gio.DBusProxyFlags.NONE, None, ScreenCast.iface, DBUS.path(ScreenCast.iface), ScreenCast.iface, None).call_sync("CreateSession", GLib.Variant("(a{sv})", ({},)), Gio.DBusCallFlags.NONE, 5000, None)[0]
+                        ScreenCast.niri_sessions[p[1]] = r
+                        response = 0
+                    except Exception as e: del ScreenCast.iface
+                if response == 0:
+                    def f():
+                        for k in tuple(ScreenCast.sessions.keys()):
+                            v = ScreenCast.sessions.get(k, {})
+                            if session in v.get("Handles", []): v["Handles"].remove(session)
+                            if not v.get("Handles", False):
+                                p = v.get("Pipeline", False)
+                                if p: ImageCopy.destroy_object(p)
+                    cancel = f
+            if response == 0: Session.export(session, cancel)
+            return inv.return_value(GLib.Variant("(ua{sv})", (response, results)))
+        if m == "SelectSources": return inv.return_value(GLib.Variant("(ua{sv})", (0 if hasattr(ImageCopy, "manager") or hasattr(ScreenCast, "iface") else 1, {})))
+        if m == "Start": return ScreenCast(inv, p)
+        if m == "Screenshot": return Screenshot.do(data=inv or False, interactive=p[-1].get("interactive", False), handle=p[0])
+        if m == "PickColor": return Palette.do(data=inv or False, handle=p[0])
+        if m in ("OpenFile", "SaveFile", "SaveFiles"): return PortalFileDialog(inv, m, *p)
+        if m == "AccessDialog": return AccessDialog(inv, *p)
+        if m == "ChooseApplication":
+            if p[-1].get("content_type", "") == "application/x-executable":
+                f = p[-1].get("uri", "").split("file://", 1)[-1]
+                GLib.spawn_command_line_async(f'sh -c "cd \"{get_parent(f)}\" && exec \"./{basename(f)}\""')
+                return inv.return_value(GLib.Variant("(ua{sv})", (0, {"choice": GLib.Variant("s", "executed"), "activation_token": GLib.Variant("s", p[-1]["activation_token"])})))
+            else: return AppChooser(inv, *p)
+        if m == "UpdateChoices":
+            Apps.update()
+            return inv.return_value(None) if inv else None
+        if m == "SetWallpaperURI":
+            s = p[-1].get("set-on", "")
+            t = "lockscreen and background" if s == "both" else s
+            Notification(title="Set Wallpaper Request", description=f"{p[1] or 'unspecified'} has asked to set the following URI as a wallpaper of {t}\n{p[3]}")
+            return inv.return_value(GLib.Variant("(u)", (1, ))) if inv else None
+        if m == "GetUserInformation": return AccountPrompt(inv, *p)
+        if m == "ComposeEmail":
+            handle, options = p[0], p[-1]
+            cc, bcc = options.get("cc", ""), options.get("bcc", "")
+            params = [f"cc={','.join(cc)}"] if cc else []
+            if bcc: params.append(f"bcc={','.join(bcc)}")
+            subject = options.get("subject", "")
+            body = options.get("body", "")
+            params += [f"subject={GLib.Uri.escape_string(subject)}", f"body={GLib.Uri.escape_string(body)}"]
+            attachments = options.get("attachment_fds", "")
+            if attachments:
+                params += [f"attachment={GLib.Uri.escape_string(a)}" for a in attachments]
+            address = options.get("address", "")
+            uri = "mailto:" + ",".join(([address] if address else []) + list(options.get("addresses", []))) + "?" + "&".join(params)
+            c = AppChooser(handle=handle, function=AppChooser.close_email, uri=uri, content_type="x-scheme-handler/mailto")
+            c.i = inv
+            return
+        if m == "PrepareInstall": return PrepareInstallPrompt(inv, *p)
+        if m == "RequestInstallToken": return inv.return_value(GLib.Variant("(ua{sv})", (1, {})))
+        if m == "ReadAll":
+            d = {}
+            p = p[0]
+            if GLib.getenv("GSETTINGS") and any(i == "org.gnome.*" for i in p):
+                for i in Gio.SettingsSchemaSource.get_default().list_schemas(False)[0]:
+                    if i.startswith("org.gnome."):
+                        s = Gio.Settings.new(i)
+                        d[i] = {}
+                        for it in s.get_property("settings-schema").list_keys():
+                            d[i][it] = s.get_value(it)
+            for i in Settings.list_properties():
+                if i.owner_type.pytype == Settings.__class__:
+                    v = Settings.do_changed(Settings, i.get_name(), True)
+                    if v != None:
+                        d.setdefault(v[0], {})
+                        d[v[0]][v[1]] = v[2]
+            return inv.return_value(GLib.Variant("(a{sa{sv}})", (d,)))
+        if m == "Read":
+            if p[1] in ("cursor-theme", "gtk-cursor-theme-name"):
+                v = get_variant(GLib.getenv("XCURSOR_THEME"))
+            elif p[1] in ("cursor-size", "gtk-cursor-theme-size"):
+                v = get_variant(GLib.getenv("XCURSOR_SIZE"))
+            else:
+                v = Settings.do_changed(Settings, p[1], True)
+                if v == None:
+                    print("Setting", p, "not found")
+                    v = get_variant("")
+                else:
+                    v = v[2]
+            if inv: return inv.return_value(GLib.Variant("(v)", (v,)))
+            else: return v
+        if m == "Get":
+            v = None
+            if p[1] == "AvailableTargets":
+                v = 1 | 4
+            if p[1] == "AvailableSourceTypes":
+                v = 1 | 2 | 4
+            if p[1] == "AvailableCursorModes":
+                v = 1 | 2 | 4
+            if p[1] == "SupportedOptions":
+                v = {}
+            if p[1] == "SupportedLauncherTypes":
+                v = 1 | 2
+            if i.endswith("Lockdown"):
+                v = getattr(Settings, p[1].replace("-", "_"), True)
+            if p[1] == "version":
+                v = 0
+                if p[0].endswith("ScreenCast"):
+                    v = 6
+                elif p[0].endswith(("Settings", "Notification")):
+                    v = 2
+                elif p[0].endswith("Screenshot"):
+                    v = 3
+                elif p[0].endswith("DynamicLauncher"):
+                    v = 1
+            v = GLib.Variant(dbus.interfaces[p[0]]["properties"][p[1]]["type"], v)
+            if inv: return inv.return_value(GLib.Variant("(v)", (v,)))
+            else: return v
+        if m == "GetAll":
+            if p[0] in dbus.interfaces and dbus.interfaces[p[0]].get("properties", False):
+                s = dict((it, Portal.handle_dbus(dbus, i=i, m="Get", p=(p[0], it))) for it in dbus.interfaces[p[0]]["properties"])
+            else:
+                s = {}
+            if inv: return inv.return_value(GLib.Variant("(a{sv})", (s, )))
+            else: return GLib.Variant("a{sv}", s)
+        print("Portal:", i, m, p)
+        if inv: inv.return_value(None)
 
 Install.extra = install_portal
 
@@ -4704,7 +4817,7 @@ register_adapter(dict, json_string)
 register_adapter(list, json_string)
 register_adapter(tuple, json_string)
 
-App(data="CREATE TABLE IF NOT EXISTS Settings (Key TEXT PRIMARY KEY NOT NULL, Value TEXT);", info=INFO, activate=nothing, file_open=file_open, shutdown=shutdown, log=False)
+App(data="CREATE TABLE IF NOT EXISTS Settings (Key TEXT PRIMARY KEY NOT NULL, Value TEXT);", info=INFO, activate=nothing, file_open=App.file_open, shutdown=App.shutdown, log=False)
 
 VALUE = r"(?:#(?:[0-9A-Fa-f]{6}|[0-9A-Fa-f]{3})|rgb\(\s*\d+(?:\.\d+)?\s*,\s*\d+(?:\.\d+)?\s*,\s*\d+(?:\.\d+)?\s*\)|rgba\(\s*\d+(?:\.\d+)?\s*,\s*\d+(?:\.\d+)?\s*,\s*\d+(?:\.\d+)?\s*,\s*(?:0|1|0?\.\d+)\s*\)|hsl\(\s*\d{1,3}(?:\.\d+)?\s*,\s*\d{1,3}(?:\.\d+)?%\s*,\s*\d{1,3}(?:\.\d+)?%\s*\)|hsla\(\s*\d{1,3}(?:\.\d+)?\s*,\s*\d{1,3}(?:\.\d+)?%\s*,\s*\d{1,3}(?:\.\d+)?%\s*,\s*(?:0|1|0?\.\d+)\s*\))"
 COLOR = Regex(VALUE)
@@ -4798,13 +4911,13 @@ keyboard .key#Esc label { transform: scale(1.25); }
 .prepare-install .child > box > image { filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.3)); }
 """
 
-PLAYER_IFACE = INFO["ID"].replace("Shell", "Player")
+PL_ID = INFO["ID"].replace("Shell", "Player")
 
 SHELL_DBUS = {
     INFO["ID"]: {
         "methods": { "Settings": {}, "Exit": {}, "Apps": {}, "ColorScheme": {}, "Palette": {}, "Clipboard": {}, "Copy": { "text": { "direction": "in", "type": "s" } }, "Paste": { "text": { "direction": "out", "type": "s" } }, "Keyboard": {}, "Key": { "key": { "direction": "in", "type": "s" }, "hold": { "direction": "in", "type": "b" }, "release": { "direction": "in", "type": "b" } }, "Player": {}, "Notifications": {}, "Screenshot": { "path": { "direction": "out", "type": "s" } }, "ScreenshotArea": { "path": { "direction": "out", "type": "s" } }, "ScreenRecord": {}, "CursorMotion": { "x": { "direction": "in", "type": "d" }, "y": { "direction": "in", "type": "d" } }, "CursorScroll": { "x": { "direction": "in", "type": "d" }, "y": { "direction": "in", "type": "d" } }, "CursorButton": { "key": { "direction": "in", "type": "s" }, "hold": { "direction": "in", "type": "b" }, "release": { "direction": "in", "type": "b" } } },
      },
-    PLAYER_IFACE: {
+    PL_ID: {
         "methods": { "Backward": {}, "Forward": {}, "Play": {}, "Pause": {}, "PlayPause": {}, "Shift": {}, "Unshift": {}, "Loop": {}, "Shuffle": {}, "VolumeDown": {}, "VolumeUp": {}, "Next": {}, "Previous": {} }
 }}
 
@@ -4816,8 +4929,10 @@ NOTIFICATION_DBUS = {
     },
 }
 
+
+AU_ID = "org.freedesktop.PolicyKit1"
 AUTHENTICATION_DBUS = {
-    "org.freedesktop.PolicyKit1.AuthenticationAgent": {
+    f"{AU_ID}.AuthenticationAgent": {
         "methods": {
           "BeginAuthentication": { "action_id": { "direction": "in", "type": "s" }, "message": { "direction": "in", "type": "s" }, "icon_name": { "direction": "in", "type": "s" }, "details": { "direction": "in", "type": "a{ss}" }, "cookie": { "direction": "in", "type": "s" }, "identities": { "direction": "in", "type": "a(sa{sv})" } },
           "CancelAuthentication": { "cookie": { "direction": "in", "type": "s" }, },
@@ -4826,7 +4941,8 @@ AUTHENTICATION_DBUS = {
 def main():
     Settings()
     if Settings.portals:
-        DBUS(PORTAL_DBUS, f"{PT_ID}.desktop.Shell", "/org/freedesktop/portal/desktop", call)
+        global PORTAL_DBUS
+        PORTAL_DBUS = DBUS(PORTAL_DBUS, f"{PT_ID}.desktop.Shell", "/org/freedesktop/portal/desktop", Portal.handle_dbus)
         if not FLATPAK_ID:
             try:
                 Install.do_desktop(INFO)
@@ -4834,20 +4950,18 @@ def main():
                 d = f"{INFO['ID']}.desktop"
                 if default_browser != d: GLib.spawn_command_line_sync(f"/usr/bin/xdg-settings set default-web-browser {d}")
             except: pass
-    global SESSION, AUTHENTICATION_AGENT
-    AUTHENTICATION_AGENT = False
+    global SESSION
     try:
         SESSION = Gio.bus_get_sync(Gio.BusType.SESSION)
     except:
         SESSION = False
     if Settings.polkit_agent:
         try:
-            AUTHENTICATION_AGENT = DBUS(AUTHENTICATION_DBUS, None, "/org/freedesktop/PolicyKit1/AuthenticationAgent", call, bus_type=Gio.BusType.SYSTEM)
-            Gio.DBusProxy.new_sync(AUTHENTICATION_AGENT.bus, Gio.DBusProxyFlags.NONE, None, "org.freedesktop.PolicyKit1", "/org/freedesktop/PolicyKit1/Authority", "org.freedesktop.PolicyKit1.Authority", None).call_sync("RegisterAuthenticationAgent", GLib.Variant("((sa{sv})ss)", (("unix-session", {"session-id": GLib.Variant("s", GLib.getenv("XDG_SESSION_ID"))}), GLib.get_language_names()[0], AUTHENTICATION_AGENT.register)), Gio.DBusCallFlags.ALLOW_INTERACTIVE_AUTHORIZATION, GLib.MAXINT, None)
+            AUTHENTICATION_AGENT = DBUS(AUTHENTICATION_DBUS, None, DBUS.path(tuple(AUTHENTICATION_DBUS.keys())[0]), Authorize.handle_dbus, bus_type=Gio.BusType.SYSTEM)
+            Gio.DBusProxy.new_sync(AUTHENTICATION_AGENT.bus, Gio.DBusProxyFlags.NONE, None, AU_ID, DBUS.path(AU_ID) + "/Authority", f"{AU_ID}.Authority", None).call_sync("RegisterAuthenticationAgent", GLib.Variant("((sa{sv})ss)", (("unix-session", {"session-id": GLib.Variant("s", GLib.getenv("XDG_SESSION_ID"))}), GLib.get_language_names()[0], AUTHENTICATION_AGENT.register)), Gio.DBusCallFlags.ALLOW_INTERACTIVE_AUTHORIZATION, GLib.MAXINT, None)
         except Exception as e:
-            AUTHENTICATION_AGENT = False
-            print(e)
-    if Settings.dbus: DBUS(SHELL_DBUS, INFO["ID"], DBUS.path(INFO["ID"]), call)
+            print("PolkitAgent:", e)
+    if Settings.dbus: DBUS(SHELL_DBUS, INFO["ID"], DBUS.path(INFO["ID"]), App.handle_dbus)
     if GLib.getenv("NIRI_SOCKET"): Niri()
     if GLib.getenv("WAYFIRE_SOCKET"): Wayfire()
     if Settings.wayland_client: Wayland()
