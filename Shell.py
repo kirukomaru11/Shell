@@ -4289,7 +4289,7 @@ class Settings(Window):
             header.pack_start(Button(t=Gtk.ToggleButton, icon_name="sidebar-show", tooltip_text="Sidebar", bindings=[(view, "show-sidebar", None, "active", SYNC_BIND)]))
             if page == "Vaults":
                 if Vault.gocryptfs:
-                    Vault.list = List(Vault, unique="cypherdir", static=True, list=App.default.data.read(table=Vault.table, return_dict=True, force_tuple=True))
+                    Vault.list = List(Vault, unique="cypherdir", static=True, list=App.default.data.read(table="Vaults", return_dict=True, force_tuple=True))
                     status = Adw.StatusPage(title="No Vaults", icon_name="system-lock-screen-symbolic")
                     Vault.list.bind_property("n-items", status, "visible", DEFAULT_BIND, invert_bool_bind)
                     v = Gtk.ListView(model=Gtk.NoSelection(model=Vault.list), factory=VaultItem.factory)
