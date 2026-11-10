@@ -131,7 +131,7 @@ def install_portal():
         with open((ROOT + f"/usr/share/xdg-desktop-portal/portals/{name}.portal").replace("//", "/"), "w") as f: f.write(t)
     except Exception as e: print("Couldn't install portal:", e)
 
-from os import open as os_open, SEEK_SET, O_WRONLY, O_NONBLOCK, O_RDWR, O_CLOEXEC, O_RDONLY, set_blocking, pipe, read, write, lseek, close, environ
+from os import environ
 environ["GDK_DEBUG"] = "no-portals"
 
 ROOT = "/run/host/root" if environ.get("FLATPAK_ID", False) else "/"
@@ -139,6 +139,9 @@ ROOT = "/run/host/root" if environ.get("FLATPAK_ID", False) else "/"
 if sys.argv and sys.argv[-1] == "--install-portal":
     install_portal()
     sys.exit()
+
+from os import SEEK_SET, O_WRONLY, O_NONBLOCK, O_RDWR, O_CLOEXEC, O_RDONLY, WNOHANG
+from os import open as os_open, devnull, fork, setsid, dup2, set_blocking, pipe, read, write, lseek, close, execvp, waitpid
 
 from struct import pack
 from ctypes import *
@@ -160,25 +163,89 @@ except ModuleNotFoundError:
         print("No Utils")
         sys.exit()
 
-if FLATPAK_ID:
-    GLib.old_spawn_command_line_sync = GLib.spawn_command_line_sync
-    def spawn_command_line_sync(*args):
-        args = list(args)
-        args[0] = "/bin/flatpak-spawn --host " + args[0]
-        return GLib.old_spawn_command_line_sync(*args)
-    GLib.spawn_command_line_sync = spawn_command_line_sync
-    GLib.old_spawn_command_line_async = GLib.spawn_command_line_async
-    def spawn_command_line_async(*args):
-        args = list(args)
-        args[0] = "/bin/flatpak-spawn --host " + args[0]
-        return GLib.old_spawn_command_line_async(*args)
-    GLib.spawn_command_line_async = spawn_command_line_async
+class Spawner:
+    def __init__(self, command, read_func=None, pty=False, detach=False):
+        read_func = read_func or self.__class__.read_all
+        if isinstance(command, str):
+            command = GLib.shell_parse_argv(command)[-1]
+        if FLATPAK_ID:
+            command[0] = command[0].split(ROOT, 1)[-1]
+            if pty:
+                command = ["flatpak-spawn", "--host", "script", "-q", "-c", " ".join(command), "/dev/null"]
+            else:
+                command = ["flatpak-spawn", "--host"] + command
+        if detach:
+            self.pid = fork()
+            if self.pid == 0:
+                setsid()
+                fd = os_open(devnull, O_RDONLY)
+                dup2(fd, 0)
+                close(fd)
+                fd = os_open(devnull, O_WRONLY)
+                dup2(fd, 1)
+                dup2(fd, 2)
+                close(fd)
+                execvp(command[0], command)
+            return
+        if pty:
+            self.pid, read_fd = pty_fork()
+            self.input_fd = read_fd
+            if self.pid == 0: execvp(command[0], command)
+        else:
+            stdin_r, stdin_w = pipe()
+            stdout_r, stdout_w = pipe()
+            self.pid = fork()
+            if self.pid == 0:
+                close(stdin_w)
+                close(stdout_r)
+                dup2(stdin_r, 0)
+                dup2(stdout_w, 1)
+                dup2(stdout_w, 2)
+                close(stdin_r)
+                close(stdout_w)
+                execvp(command[0], command)
+            close(stdin_r)
+            close(stdout_w)
+            read_fd = stdout_r
+            self.input_fd = stdin_w
+        while True:
+            ready, _, _ = select([read_fd], [], [], 0.2)
+            if ready:
+                try:
+                    data = read(read_fd, 4096)
+                except Exception as e:
+                    data = None
+                if not data: break
+                text = data.decode()
+                if read_func:
+                    r = read_func(self, text)
+                    if r: break
+                elif hasattr(self, "read"):
+                    r = self.read(text)
+                    if r: break
+                else: break
+            finished, status = waitpid(self.pid, WNOHANG)
+            if finished: break
+        close(read_fd)
+        if not pty: close(self.input_fd)
+        self.input_fd = None
+
+    def read_all(self, text):
+        if not hasattr(self, "output"):
+            self.output = ""
+        self.output += text
+
+    def write(self, t=""):
+        if isinstance(t, str):
+            t = t.encode()
+        write(self.input_fd, t + b"\n")
 
 from io import FileIO
 from re import compile as Regex
+from pty import fork as pty_fork
 from time import sleep
 from json import loads as json, dumps as json_string
-from string import ascii_uppercase
+from string import ascii_lowercase, ascii_uppercase
 from select import select
 from fnmatch import fnmatch
 from fcntl import ioctl
@@ -202,7 +269,7 @@ except:
 
 if FLATPAK_ID:
     HOST_ENV = {}
-    for i in GLib.spawn_command_line_sync("env")[1].decode().split("\n"):
+    for i in Spawner("env").output.split("\n"):
         i = i.split("=", 1)
         if len(i) == 2:
             HOST_ENV[i[0]] = i[1]
@@ -955,7 +1022,7 @@ class Controller(GObject.Object):
     def audio_changed(self, p):
         if not Gst: return
         if self.audio_output == "None":
-            if self.audio_id: GLib.spawn_command_line_async(f"pactl unload-module {self.audio_id}")
+            if self.audio_id: Spawner(f"pactl unload-module {self.audio_id}", detach=True)
             self.audio_id = ""
             MediaStream.destroy_pipeline(self.audio_pipeline)
             self.audio_pipeline = None
@@ -966,7 +1033,7 @@ class Controller(GObject.Object):
                 return
             rate = "48000"
             channels = "2"
-            self.audio_id = GLib.spawn_command_line_sync(f'pactl load-module module-null-sink sink_name="{self.sink_name}" rate="{rate}" channels="{channels}" sink_properties="device.description=\'DualShock\\ 4\'"')[1].decode().split("\n")[0]
+            self.audio_id = Spawner(f'pactl load-module module-null-sink sink_name="{self.sink_name}" rate="{rate}" channels="{channels}" sink_properties="device.description=\'DualShock\\ 4\'"').output.split("\n")[0]
             self.audio_pipeline = Gst.parse_bin_from_description(f'pulsesrc device="{self.sink_name}.monitor" ! sbcenc ! audio/x-sbc,channels={channels},rate={rate},channel-mode={"stereo" if channels == "2" else "mono"},blocks=16,subbands=8,bitpool=30 ! queue ! appsink async=false sync=false emit-signals=true name=Sink')
             self.audio_pipeline.get_by_name("Sink").connect("new-sample", self.__class__.new_sample, self)
             self.audio_pipeline.set_state(Gst.State.PLAYING)
@@ -1210,7 +1277,7 @@ class Controller(GObject.Object):
             if getattr(self, "ps", False) and v:
                 self.comboed.add("ps")
                 self.comboed.add(name)
-                GLib.spawn_command_line_async("pactl set-sink-volume @DEFAULT_SINK@ +5%")
+                Spawner("pactl set-sink-volume @DEFAULT_SINK@ +5%", detach=True)
             elif "l3" in self.comboed:
                 self.send(Keyboard, "Ctrl", v)
                 self.send(Keyboard, "W", v)
@@ -1222,7 +1289,7 @@ class Controller(GObject.Object):
             if getattr(self, "ps", False) and v:
                 self.comboed.add("ps")
                 self.comboed.add(name)
-                GLib.spawn_command_line_async("pactl set-sink-volume @DEFAULT_SINK@ -5%")
+                Spawner("pactl set-sink-volume @DEFAULT_SINK@ -5%", detach=True)
             elif "l3" in self.comboed:
                 self.send(Keyboard, "Ctrl", v)
                 self.send(Keyboard, "Shift", v)
@@ -1282,15 +1349,12 @@ class Controller(GObject.Object):
 
 Controller.list = List(Controller, unique="addr", static=True)
 
-class ControllerItem(Adw.Bin):
-    controller = GObject.Property(type=Controller)
+class ControllerItem(ListItem):
     led_row = GObject.Property(type=ColorRow)
     emulate_row = GObject.Property(type=Adw.SwitchRow)
     audio_output_row = GObject.Property(type=ToggleGroupRow)
     def __init__(self):
         super().__init__(child=Adw.PreferencesGroup())
-        self.bindings = []
-        self.connect("notify::controller", self.__class__.controller_changed)
         self.led_row = ColorRow(title="LED", with_alpha=False)
         self.emulate_row = Adw.SwitchRow(title="Emulate Xbox Gamepad")
         self.audio_output_row = ToggleGroupRow(title="Audio Output", toggles=[Adw.Toggle(tooltip=a, icon_name=b + "-symbolic", name=a) for a, b in (("Speakers", "audio-speakers"), ("Headset", "audio-headset"), ("None", "audio-volume-muted"))])
@@ -1310,23 +1374,19 @@ class ControllerItem(Adw.Bin):
     @staticmethod
     def disconnect(b):
         self = b.get_ancestor(ControllerItem)
-        if self.controller:
-            if self.controller.type == "bluetooth": GLib.spawn_command_line_async(f"/usr/bin/bluetoothctl disconnect {self.controller.addr}")
-            self.controller.remove()
+        if self.item:
+            if self.item.type == "bluetooth": Spawner(f"/usr/bin/bluetoothctl disconnect {self.item.addr}", detach=True)
+            self.item.remove()
 
-    @staticmethod
-    def controller_changed(self, p=None):
-        for i in getattr(self, "bindings", []): i.unbind()
-        self.bindings = []
-        if self.controller:
-            self.bindings.append(self.controller.bind_property("addr", self.get_child(), "title", DEFAULT_BIND))
-            self.bindings.append(self.controller.bind_property("rgb", self.led_row, "rgba", SYNC_BIND))
-            self.bindings.append(self.controller.bind_property("emulate-xbox-gamepad", self.emulate_row, "active", SYNC_BIND))
-            self.bindings.append(self.controller.bind_property("type", self.audio_output_row, "visible", DEFAULT_BIND, self.__class__.bluetooth_bind))
-            self.bindings.append(self.controller.bind_property("audio-output", self.audio_output_row, "active", SYNC_BIND))
-            self.bindings.append(self.controller.bind_property("type", self.battery_button, "visible", DEFAULT_BIND, self.__class__.bluetooth_bind))
-            self.bindings.append(self.controller.bind_property("battery", self.battery_button, "icon-name", DEFAULT_BIND, self.__class__.battery_icon_bind))
-            for i in ("volume_headphones", "volume_microphone", "volume_speakers", "weak_rumble", "strong_rumble"): self.bindings.append(self.controller.bind_property(i.replace("_", "-"), getattr(self, i), "value", SYNC_BIND))
+    def bind(self):
+        self.bindings.append(self.item.bind_property("addr", self.get_child(), "title", DEFAULT_BIND))
+        self.bindings.append(self.item.bind_property("rgb", self.led_row, "rgba", SYNC_BIND))
+        self.bindings.append(self.item.bind_property("emulate-xbox-gamepad", self.emulate_row, "active", SYNC_BIND))
+        self.bindings.append(self.item.bind_property("type", self.audio_output_row, "visible", DEFAULT_BIND, self.__class__.bluetooth_bind))
+        self.bindings.append(self.item.bind_property("audio-output", self.audio_output_row, "active", SYNC_BIND))
+        self.bindings.append(self.item.bind_property("type", self.battery_button, "visible", DEFAULT_BIND, self.__class__.bluetooth_bind))
+        self.bindings.append(self.item.bind_property("battery", self.battery_button, "icon-name", DEFAULT_BIND, self.__class__.battery_icon_bind))
+        for i in ("volume_headphones", "volume_microphone", "volume_speakers", "weak_rumble", "strong_rumble"): self.bindings.append(self.item.bind_property(i.replace("_", "-"), getattr(self, i), "value", SYNC_BIND))
 
 
     @staticmethod
@@ -1342,24 +1402,6 @@ class ControllerItem(Adw.Bin):
             v += "-plugged-in" if b.get_source().type == "usb" else f"-charg{'ed' if v == 'full' else 'ing'}"
         v = "battery-" + v.replace("full-plugged", "level-100-plugged") + "-symbolic"
         return v
-
-    factory = Gtk.SignalListItemFactory.new()
-    @staticmethod
-    def setup(f, l): l.set_child(ControllerItem())
-    factory.connect("setup", setup)
-    @staticmethod
-    def bind(f, l):
-        if not l.get_child(): return
-        l.get_child().controller = l.get_property("item")
-        Task.invoke(l.get_child().get_parent().set_properties, css_classes=[], focusable=False      )
-    factory.connect("bind", bind)
-    @staticmethod
-    def unbind(f, l):
-        l.get_child().controller = None
-    factory.connect("unbind", unbind)
-    @staticmethod
-    def teardown(f, l): l.set_child(None)
-    factory.connect("teardown", teardown)
 
 class EventCodes:
     @staticmethod
@@ -1842,24 +1884,28 @@ class Notification(ListObject):
 
 Notification.list = List(Notification, list=True)
 
-class NotificationItem(Gtk.Overlay):
-    notification = GObject.Property(type=Notification)
-    def __init__(self, notification=None):
-        super().__init__(overflow=Gtk.Overflow.VISIBLE, css_name="notification", child=Gtk.Box(), css_classes=["card"])
-        self.connect("notify::notification", self.__class__.notification_changed)
-        self.bindings = []
-        self.add_overlay(Button(tooltip_text="Remove", css_classes=("close", "circular"), icon_name="window-close", callback=self.__class__.remove, valign=Gtk.Align.START, halign=Gtk.Align.END))
+class NotificationItem(ListItem):
+    parent_options = False
+    def __init__(self, item=None):
+        super().__init__(css_name="notification", css_classes=["card"], child=Gtk.Overlay(overflow=Gtk.Overflow.VISIBLE, child=Gtk.Box()))
+        self.get_child().add_overlay(Button(tooltip_text="Remove", css_classes=("close", "circular"), icon_name="window-close", callback=self.__class__.remove, valign=Gtk.Align.START, halign=Gtk.Align.END))
         self.image = Gtk.Image(overflow=Gtk.Overflow.HIDDEN, pixel_size=92)
         self.image.bind_property("storage-type", self.image, "visible", DEFAULT_BIND, self.__class__.icon_bind)
         self.title = Gtk.Label(selectable=True, css_classes=("summary", "title-4"), halign=Gtk.Align.CENTER, hexpand=True, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, justify=Gtk.Justification.CENTER)
         self.body = Gtk.Label(selectable=True, css_classes=("body",), halign=Gtk.Align.CENTER, hexpand=True, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, justify=Gtk.Justification.CENTER)
-        self.get_child().append(self.image)
+        self.get_child().get_child().append(self.image)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         box.append(self.title)
         box.append(self.body)
         for i in box: i.bind_property("label", i, "visible", DEFAULT_BIND, bool_bind)
-        self.get_child().append(Gtk.ScrolledWindow(hexpand=True, child=box))
-        self.notification = notification
+        self.get_child().get_child().append(Gtk.ScrolledWindow(hexpand=True, child=box))
+        self.item = item
+
+    def bind(self):
+        self.bindings.append(self.item.bind_property("app", self.image, "tooltip-text", DEFAULT_BIND))
+        self.bindings.append(self.item.bind_property("title", self.title, "label", DEFAULT_BIND))
+        self.bindings.append(self.item.bind_property("description", self.body, "label", DEFAULT_BIND))
+        self.bindings.append(self.item.bind_property("display", self.image, "name", DEFAULT_BIND, self.__class__.do_icon_bind))
 
     @staticmethod
     def icon_bind(b, v): return v != Gtk.ImageType.EMPTY
@@ -1873,38 +1919,10 @@ class NotificationItem(Gtk.Overlay):
         return ""
 
     @staticmethod
-    def notification_changed(self, *_):
-        for i in getattr(self, "bindings", []): i.unbind()
-        self.bindings = []
-        if self.notification:
-            self.bindings.append(self.notification.bind_property("app", self.image, "tooltip-text", DEFAULT_BIND))
-            self.bindings.append(self.notification.bind_property("title", self.title, "label", DEFAULT_BIND))
-            self.bindings.append(self.notification.bind_property("description", self.body, "label", DEFAULT_BIND))
-            self.bindings.append(self.notification.bind_property("display", self.image, "name", DEFAULT_BIND, self.__class__.do_icon_bind))
-
-    @staticmethod
     def remove(b):
         self = b.get_ancestor(NotificationItem)
         for i in NotificationPopup.get_all(): i.close()
-        if self and self.notification: self.notification.remove()
-
-    factory = Gtk.SignalListItemFactory.new()
-    @staticmethod
-    def setup(f, l): l.set_child(NotificationItem())
-    factory.connect("setup", setup)
-    @staticmethod
-    def bind(f, l):
-        if not l.get_child(): return
-        l.get_child().notification = l.get_property("item")
-        Task.invoke(l.get_child().get_parent().set_properties, css_classes=[], focusable=False      )
-    factory.connect("bind", bind)
-    @staticmethod
-    def unbind(f, l):
-        l.get_child().notification = None
-    factory.connect("unbind", unbind)
-    @staticmethod
-    def teardown(f, l): l.set_child(None)
-    factory.connect("teardown", teardown)
+        if self and self.item: self.item.remove()
 
 class NotificationPopup(Adw.ApplicationWindow):
     def __init__(self, notification):
@@ -2441,15 +2459,19 @@ class Clipboard(Window):
             proxy.mimetypes.add(args[0])
 
 class DesktopApp(ListObject):
-    custom = GObject.Property(type=int)
-    id = GObject.Property(type=str)
+    id = GObject.Property(nick="ID", type=str)
     icon = GObject.Property(type=str)
-    display_icon = GObject.Property(type=object)
     name = GObject.Property(type=str)
     command = GObject.Property(type=str)
-    mimetypes = GObject.Property(type=object)
+    custom = GObject.Property(type=int)
+    mimetypes = GObject.Property(nick="MimeTypes", type=object)
     hidden = GObject.Property(type=bool, default=False)
+    display_icon = GObject.Property(type=object)
     default = GObject.Property(type=object)
+
+    table = "Apps"
+    properties = ["custom", "id", "name", "hidden", "command", "icon", "mimetypes"]
+    properties_extra = {"ID": "PRIMARY_KEY"}
 
     def __init__(self, path="", data=None, **kwargs):
         super().__init__(**kwargs)
@@ -2482,11 +2504,33 @@ class DesktopApp(ListObject):
             self.name = f"Custom App {self.id}"
         if data:
             for k, v in data.items():
+                if k == "MimeTypes" and isinstance(v, str):
+                    try:
+                        v = json(v)
+                    except:
+                        v = []
+                    v = v if isinstance(v, list) else []
                 if getattr(self, k.lower(), None) != v and v: setattr(self, k.lower(), v)
 
     @staticmethod
+    def changed(self, p):
+        if not self in DesktopApp.list.get_model(): return
+        name = p.get_name().replace("-", "_")
+        if not name in self.__class__.properties: return
+        v = getattr(self, name, None)
+        p = p.get_nick() or name.title().replace("_", " ")
+        App.default.data.update(table="Apps", column=p, value=v, conditions="ID = ?", conds=(self.id, ))
+
+    @staticmethod
+    def items_changed(l, *_):
+        App.default.data.table_clear("Apps")
+        for i in l:
+            v = i.to_dict()
+            App.default.data.new(table="Apps", names=tuple(v.keys()), values=tuple(v.values()))
+
+    @staticmethod
     def update(*_):
-        apps = json(Data.setting("Apps Data", {}))
+        apps = dict((i["ID"], i) for i in sorted(App.default.data.read(table="Apps", return_dict=True, force_tuple=True), key=DesktopApp.custom_sort))
         l = []
         d = set((HOST_SYSTEM_DATA if FLATPAK_ID else SYSTEM_DATA) + [HOST_DATA if FLATPAK_ID else DATA])
         d.add(Path(HOST_DATA if FLATPAK_ID else DATA, "flatpak/exports/share"))
@@ -2518,17 +2562,9 @@ class DesktopApp(ListObject):
         for i in l:
             i.custom = a.get(i.id, 0)
         DesktopApp.list.get_model().replace(l)
-        DesktopApp.save()
 
     @staticmethod
-    def custom_sort(self): return self.custom
-
-    def save():
-        c = {}
-        for i in sorted([i for i in DesktopApp.list.get_model()], key=DesktopApp.custom_sort):
-            c[i.id] = {"Name": i.name or "", "Icon": i.icon or "", "Command": i.command or "", "MimeTypes": i.mimetypes or [], "Hidden": i.hidden}
-        for k, v in json(Data.setting("Apps Data", {})).items(): c.setdefault(k, v)
-        Data.setting("Apps Data", {}, c)
+    def custom_sort(self): return self.get("Custom", 0) if isinstance(self, dict) else getattr(self, "custom", 0)
 
     def launch(self, uris=None):
         uris = uris or []
@@ -2550,7 +2586,7 @@ class DesktopApp(ListObject):
         command = command.strip()
         if command:
             if hasattr(Niri, "connection"): Niri.request("Action", { "SpawnSh": { "command": command } })
-            else: GLib.spawn_command_line_async(command)
+            else: Spawner(command, detach=True)
 
     def do_display_icon(self):
         v = self.icon or "image-x-generic-symbolic"
@@ -2567,7 +2603,29 @@ class DesktopApp(ListObject):
         elif isinstance(self.display_icon, Gio.File): i.set_from_file(self.display_icon.get_path())
         elif isinstance(self.display_icon, str): i.set_from_icon_name(self.display_icon)
 
-DesktopApp.list = Gtk.SortListModel(model=List(DesktopApp, unique="id", static=True))
+DesktopApp.list = Gtk.SortListModel(model=List(DesktopApp, unique="id", static=True, list=True))
+
+class LastUsed(ListObject):
+    mimetype = GObject.Property(nick="MimeType", type=str)
+    app = GObject.Property(type=str)
+    table = "Last Used"
+    properties = ["mimetype", "app"]
+
+    @staticmethod
+    def changed(self, p):
+        name = p.get_name().replace("-", "_")
+        if not name in self.__class__.properties: return
+        v = getattr(self, name, None)
+        p = p.get_nick() or name.title().replace("_", " ")
+        App.default.data.update(table="Last Used", column=p, value=v, conditions="MimeType = ?", conds=(self.mimetype, ))
+
+    @staticmethod
+    def items_changed(l, *_):
+        if not hasattr(LastUsed, "list"): return
+        App.default.data.table_clear("Last Used")
+        for i in LastUsed.list:
+            v = i.to_dict()
+            App.default.data.new(table="Last Used", names=tuple(v.keys()), values=tuple(v.values()))
 
 class AppChooser(Window):
     uri = GObject.Property(type=str)
@@ -2594,7 +2652,7 @@ class AppChooser(Window):
         if is_online(self.uri):
             self.content_type = "x-scheme-handler/https"
         sorter = Gtk.CustomSorter()
-        sorter.set_sort_func(self.__class__.do_sort, json(Data.setting("Apps Last Used", {})).get(self.content_type, ""))
+        sorter.set_sort_func(self.__class__.do_sort, getattr(LastUsed.list[self.content_type], "app", ""))
         filter = Gtk.FilterListModel(model=Gtk.SortListModel(model=DesktopApp.list, sorter=sorter))
         self.bind_property("filter", filter, "filter", DEFAULT_BIND)
         self.default_filters = Gtk.EveryFilter()
@@ -2644,8 +2702,8 @@ class AppChooser(Window):
 
     @staticmethod
     def do_sort(a, b, last):
-        a_last = a.id.rsplit(".desktop", 1)[0] == last
-        if a_last != b.id.rsplit(".desktop", 1)[0]: return -1 if a_last else 1
+        a_last = a.id == last
+        if a_last != b.id: return -1 if a_last else 1
         return 0
 
     @staticmethod
@@ -2660,35 +2718,18 @@ class AppChooser(Window):
         if not self: return
         i = g.get_model().get_item(p)
         i.launch([self.uri])
-        l = json(Data.setting("Apps Last Used", {}))
-        l[self.content_type] = i.id.rsplit(".desktop", 1)[0]
-        Data.setting("Apps Last Used", {}, l)
+        if not LastUsed.list[self.content_type]: LastUsed.list.add(mimetype=self.content_type)
+        LastUsed.list[self.content_type].app = i.id
         self.__class__.do_close(self)
         self.close()
 
-class DesktopAppItem(Gtk.Image):
-    app = GObject.Property(type=DesktopApp)
+class DesktopAppItem(ListItem):
+    parent_options = False
+    def __init__(self): super().__init__(css_name="desktop-app-item", child=Gtk.Image())
 
-    factory = Gtk.SignalListItemFactory.new()
-    @staticmethod
-    def setup(f, l): l.set_child(DesktopAppItem())
-    factory.connect("setup", setup)
-    @staticmethod
-    def bind(f, l):
-        if not l.get_child(): return
-        l.get_child().bindings = []
-        l.get_child().bindings.append(l.bind_property("item", l.get_child(), "app", DEFAULT_BIND))
-        l.get_child().bindings.append(l.get_property("item").bind_property("name", l.get_child(), "tooltip-text", DEFAULT_BIND))
-        l.get_child().bindings.append(l.get_property("item").bind_property("display-icon", l.get_child(), "name", DEFAULT_BIND, l.get_child().icon_bind))
-    factory.connect("bind", bind)
-    @staticmethod
-    def unbind(f, l):
-        for i in getattr(l.get_child(), "bindings", []): i.unbind()
-        if hasattr(l.get_child(), "bindings"): del l.get_child().bindings
-    factory.connect("unbind", unbind)
-    @staticmethod
-    def teardown(f, l): l.set_child(None)
-    factory.connect("teardown", teardown)
+    def bind(self):
+        self.bindings.append(self.item.bind_property("name", self, "tooltip-text", DEFAULT_BIND))
+        self.bindings.append(self.item.bind_property("display-icon", self.get_child(), "name", DEFAULT_BIND, self.__class__.icon_bind))
 
     @staticmethod
     def icon_bind(b, v):
@@ -2732,7 +2773,6 @@ class AppEditor(Window):
             if not v and k in self.app.default: setattr(self.app, k, self.app.default[k])
             else: setattr(self.app, k, v)
         self.app.display_icon = None
-        DesktopApp.save()
         self.app = None
         self.close()
 
@@ -2752,6 +2792,7 @@ class Apps(LayerShell):
 
     def __init__(self):
         super().__init__(layer=("OVERLAY" if hasattr(Wayfire, "connection") else "TOP"), target=True, keyboard_mode="EXCLUSIVE", css_name=self.__class__.__name__.lower())
+        LastUsed.list = List(LastUsed, unique="mimetype", static=True, list=App.default.data.read(table=LastUsed.table, return_dict=True, force_tuple=True))
         self.__class__.instance = self
         self.context = Gtk.PopoverMenu(has_arrow=False)
         self.search = Gtk.SearchEntry(opacity=0, can_target=False)
@@ -2807,19 +2848,13 @@ class Apps(LayerShell):
         self = Apps.instance
         i = self.context_widget
         if b == "Reload": DesktopApp.update()
-        if b == "Open": i.app.launch()
+        if b == "Open": i.item.launch()
         if b.lower().endswith("hide"):
-            i.app.hidden = b == "Hide"
-            DesktopApp.save()
+            i.item.hidden = b == "Hide"
         if b == "Edit":
-            AppEditor(i.app)
+            AppEditor(i.item)
             self.set_visible(False)
-        if b == "Remove":
-            d = json(Data.setting("Apps Data", {}))
-            del d[i.app.id]
-            Data.setting("Apps Data", {}, d)
-            DesktopApp.list.get_model().remove(i.app)
-            DesktopApp.save()
+        if b == "Remove": DesktopApp.list.get_model().remove(i.item)
         if b == "Add New":
             l = []
             for i in DesktopApp.list.get_model():
@@ -2828,7 +2863,6 @@ class Apps(LayerShell):
             while n in l:
                 n += 1
             DesktopApp.list.get_model().append(DesktopApp(id=str(n), custom=max((i.custom for i in DesktopApp.list.get_model()), default=0)))
-            DesktopApp.save()
 
     @staticmethod
     def do(*_):
@@ -2854,7 +2888,7 @@ class Apps(LayerShell):
             return
         if self.context_widget.get_ancestor(DesktopAppItem):
             self.context_widget = self.context_widget.get_ancestor(DesktopAppItem)
-            actions = ["Open", ["Edit", "Unhide" if self.context_widget.app.hidden else "Hide"], "Remove" if not self.context_widget.app.id.endswith(".desktop") else ""]
+            actions = ["Open", ["Edit", "Unhide" if self.context_widget.item.hidden else "Hide"], "Remove" if not self.context_widget.item.id.endswith(".desktop") else ""]
             menu = Gio.Menu.new()
             for i in actions:
                 if isinstance(i, list) and all(it for it in i):
@@ -2881,18 +2915,6 @@ class Apps(LayerShell):
             else: self.search.set_text("")
 
     @staticmethod
-    def save():
-        original = json(Data.setting("Apps Data", {}))
-        d = {}
-        for i in Apps.apps:
-            if hasattr(i, "id"):
-                d[i.id] = {"Name": i.name, "Icon": i.icon, "Command": i.command, "MimeTypes": i.mimetypes, "Hidden": i.hidden}
-        for i in original:
-            if not i in d:
-                d[i] = original[i]
-        Data.setting("Apps Data", {}, d)
-
-    @staticmethod
     def on_drag_source_prepare(e, x, y):
         self = e.get_widget().get_root()
         w = self.pick(x, y, Gtk.PickFlags.DEFAULT)
@@ -2900,7 +2922,7 @@ class Apps(LayerShell):
         c = None
         if self.context_widget:
             e.set_actions(Gdk.DragAction.MOVE)
-            c = Gdk.ContentProvider.new_for_value(self.context_widget.app)
+            c = Gdk.ContentProvider.new_for_value(self.context_widget.item)
         else: e.set_actions(Gdk.DragAction.NONE)
         e.set_content(c)
         return c
@@ -2923,15 +2945,14 @@ class Apps(LayerShell):
         self.clear_drop()
         h = self.pick(x, y, Gtk.PickFlags.DEFAULT)
         h = h.get_ancestor(DesktopAppItem) if h else None
-        if h and h.app != self.context_widget.app:
+        if h and h.item != self.context_widget.item:
             l = [DesktopApp.list.get_item(i) for i in range(DesktopApp.list.get_n_items())]
-            start = l.index(h.app)
-            l.remove(self.context_widget.app)
-            l.insert(start, self.context_widget.app)
+            start = l.index(h.item)
+            l.remove(self.context_widget.item)
+            l.insert(start, self.context_widget.item)
             for n, i in enumerate(l):
                 i.custom = n
             self.__class__.custom_sort.set_expression(Gtk.PropertyExpression.new(DesktopApp, None, "custom"))
-            Task.invoke(DesktopApp.save)
             return True
 
     @staticmethod
@@ -2941,7 +2962,7 @@ class Apps(LayerShell):
         self.clear_drop()
         w = self.pick(x, y, Gtk.PickFlags.DEFAULT)
         self.highlight = w.get_ancestor(DesktopAppItem) if w else None
-        if self.highlight and self.highlight.app == self.context_widget.app:
+        if self.highlight and self.highlight.item == self.context_widget.item:
             self.highlight = None
         if self.highlight: self.highlight.add_css_class("highlight")
         return Gdk.DragAction.MOVE
@@ -3782,6 +3803,401 @@ class Player(Window):
         Task.invoke(Player.update)
         return inv.return_value(None) if inv else None
 
+class Vault(ListObject):
+    gocryptfs = False
+
+    name = GObject.Property(type=str)
+    prompt_at_startup = GObject.Property(nick="Prompt at startup", type=bool, default=True)
+
+    @GObject.Property(nick="Cypher Directory", type=str)
+    def cypherdir(self): return getattr(self, "_cypherdir", "")
+
+    @cypherdir.setter
+    def cypherdir(self, value):
+        old = self.cypherdir if hasattr(self, "_cypherdir") else False
+        self._cypherdir = value
+        if old != False and self in Vault.list:
+            App.default.data.update(table="Vaults", column="Cypher Directory", value=self.cypherdir, conditions="\"Cypher Directory\" = ?", conds=(old,))
+            Vault.sync_all()
+
+    mountpoint = GObject.Property(type=str)
+
+    allow_other = GObject.Property(nick="Allow other users to access the mount", type=bool, default=True)
+    idle = GObject.Property(nick="Unmount automatically after specified idle duration", type=str)
+    config = GObject.Property(nick="Custom path to config file", type=str)
+    ctlsock = GObject.Property(nick="Create control socket at location", type=str)
+    passfile = GObject.Property(nick="Read password from plain text file(s)", type=str)
+    fsck = GObject.Property(nick="Check filesystem integrity", type=bool, default=False)
+    masterkey = GObject.Property(nick="Mount with explicit master key instead of password", type=bool, default=False)
+    nonempty = GObject.Property(nick="Allow mounting over non-empty directory", type=bool, default=False)
+    ro = GObject.Property(nick="Mount read-only", type=bool, default=False)
+    exec = GObject.Property(nick="Allow executables", type=bool, default=False)
+
+    test = GObject.Property(type=str)
+
+    table = "Vaults"
+    properties = ["name", "prompt_at_startup", "cypherdir", "mountpoint", "passfile", "allow_other", "idle", "config", "ctlsock", "fsck", "masterkey", "nonempty", "ro", "exec"]
+
+    is_locked = GObject.Property(type=bool, default=True)
+
+    @staticmethod
+    def changed(self, p):
+        if not self in Vault.list: return
+        name = p.get_name().replace("-", "_")
+        if not name in self.__class__.properties: return
+        v = getattr(self, name, None)
+        p = p.get_nick() or name.title().replace("_", " ")
+        App.default.data.update(table="Vaults", column=p, value=v, conditions="\"Cypher Directory\" = ?", conds=(self.cypherdir, ))
+
+    @staticmethod
+    def items_changed(l, *_):
+        App.default.data.table_clear("Vaults")
+        for i in l:
+            v = i.to_dict()
+            App.default.data.new(table="Vaults", names=tuple(v.keys()), values=tuple(v.values()))
+
+    def sync_all():
+        if not len(Vault.list): return
+        r = json(Spawner("findmnt -t fuse.gocryptfs --json").output.strip())
+        for i in Vault.list:
+            i.is_locked = True
+        for i in r.get("filesystems"):
+            if not i.get("target", False): continue
+            f = Vault.list[i.get("source", "")]
+            if f:
+                f.is_locked = False
+        return r
+
+    def unlock(self, sync_all=True):
+        if sync_all: Vault.sync_all()
+        if not self.cypherdir: return Notification(app=INFO["ID"], title=f"{self.name} vault error", description="No cypher directory set", display="system-lock-screen-symbolic")
+        if not self.mountpoint: return Notification(app=INFO["ID"], title=f"{self.name} vault error", description="No mountpoint set", display="system-lock-screen-symbolic")
+        if self.passfile: self.do_unlock()
+        else:
+            p = EntryPrompt(callback=self.__class__.prompt_unlock, heading=f"Unlock {self.name or 'Unnamed'}", password=True)
+            p.vault = self
+            if self.masterkey: p.get_extra_child().set_property("placeholder-text", "Master Key")
+            p.present()
+
+    @staticmethod
+    def prompt_unlock(p):
+        vault = p.vault
+        p.vault = None
+        vault.do_unlock(p.get_extra_child().get_text())
+
+    def do_unlock(self, p=None):
+        if not self.is_locked: return
+        init = False
+        command = [Vault.gocryptfs, "-nosyslog"]
+        if not exists(self.cypherdir):
+            Notification(app=INFO["ID"], title=f"Vault {self.name}", description="Creating cypher directory", display="system-lock-screen-symbolic")
+            make_dirs(self.cypherdir)
+        if not exists(self.mountpoint):
+            Notification(app=INFO["ID"], title=f"Vault {self.name}", description="Creating mountpoint directory", display="system-lock-screen-symbolic")
+            make_dirs(self.mountpoint)
+        config = self.config or Path(self.cypherdir, "gocryptfs.conf")
+        if self.config:
+            command.append("-config")
+            command.append(self.config)
+        if not exists(config):
+            if list_dir(self.cypherdir): return Notification(app=INFO["ID"], title=f"Vault {self.name} error", description="Config file not found and cypher directory not empty", display="system-lock-screen-symbolic")
+            init = True
+        if self.passfile:
+            command.append("-passfile")
+            command.append(self.passfile)
+        else:
+            if self.masterkey and not init:
+                command.append("-masterkey")
+                command.append(p)
+        if not init:
+            if self.idle: command.extend(("-idle", self.idle))
+            if self.ctlsock: command.extend(("-ctlsock", self.ctlsock))
+            if self.fsck: command.append("-fsck")
+            if self.nonempty: command.append("-nonempty")
+            if self.allow_other: command.append("-allow_other")
+            if self.exec: command.append("-exec")
+            if self.ro: command.append("-ro")
+        if init: command.append("-init")
+        command.append(self.cypherdir)
+        if not init:
+            command.append(self.mountpoint)
+            if not self.nonempty and list_dir(self.mountpoint): return Notification(app=INFO["ID"], title=f"Vault {self.name} error", description="Mountpoint not empty", display="system-lock-screen-symbolic")
+        password = (p or "")
+        def r(spawner, text):
+            if any(i in text for i in ("Decrypting master key", "-allow_other\" is set", "mounted and ready", "syslog delivery error")) or not text: return
+            if "Password:" in text:
+                spawner.write(password)
+                return
+            elif "Repeat:" in text:
+                spawner.write(password)
+                return
+            elif "Your master key is" in text:
+                text = "".join([i for i in text.split("master key is:", 1)[-1].split("[2m", 1)[-1].split("[0m", 1)[0][:-1] if i.isdigit() or i == "-" or i in ascii_lowercase])
+                box = Gtk.Box(css_name="master-key", valign=Gtk.Align.CENTER, orientation=Gtk.Orientation.VERTICAL)
+                box.append(Gtk.Label(css_classes=["title-1"], label="Your master key is"))
+                box.append(Gtk.Label(justify=Gtk.Justification.CENTER, selectable=True, css_classes=["title-4"], label=text, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR))
+                box.append(Gtk.Label(justify=Gtk.Justification.CENTER, css_classes=["title-2"], label="Write it down somewhere\nThis will not be shown again"))
+                d = Adw.Dialog(child=Gtk.WindowHandle(child=box), content_width=420, content_height=80)
+                d.add_css_class("vaults")
+                d.present()
+                return
+            elif "passfile: could not read" in text:
+                text = "Could not read from passfile"
+            elif "Password incorrect" in text:
+                text = "Password incorrect"
+            elif "Could not parse master key" in text:
+                text = "Master key incorrect"
+            elif "invalid duration" in text:
+                text = "Invalid idle duration"
+            elif "annot open config file" in text:
+                text = "Cannot open config file"
+            elif "password is empty" in text:
+                text = "Empty password"
+            if text: self.error(text)
+            return True
+        Spawner(command, r, pty=True)
+        if init: self.do_unlock()
+        else: Vault.sync_all()
+
+    def error(self, e): Notification(app=INFO["ID"], title=f"Vault {self.name} error", description=e, display="system-lock-screen-symbolic")
+
+    def lock(self):
+        r = Vault.sync_all()
+        if not self.is_locked:
+            for i in r.get("filesystems"):
+                if i.get("target", False) and i.get("source", "") == self.cypherdir:
+                    try: Spawner(f"umount {i['target']}")
+                    except Exception as e: print("Vault:", e)
+        self.is_locked = True
+
+    @staticmethod
+    def new(*_): Vault.edit()
+
+    def edit(self=None):
+        vault = self or Vault()
+        page = GroupsPage()
+        group = Adw.PreferencesGroup(title="Vault")
+        page.add(group)
+        r = Adw.EntryRow(title="Name")
+        vault.bind_property("name", r, "text", SYNC_BIND)
+        group.add(r)
+        r = Adw.SwitchRow(title="Prompt at startup")
+        vault.bind_property("prompt-at-startup", r, "active", SYNC_BIND)
+        group.add(r)
+        group = Adw.PreferencesGroup(title="Path")
+        page.add(group)
+        for i in ("cypherdir", "mountpoint"):
+            r = Adw.EntryRow(title=getattr(Vault, i).nick or i.title())
+            if i == "cypherdir" and self:
+                r.set_properties(text=vault.cypherdir, show_apply_button=True)
+                r.connect("apply", self.__class__.do_change_name)
+            else: vault.bind_property(i, r, "text", SYNC_BIND)
+            r.add_suffix(Button(icon_name="document-open", valign=Gtk.Align.CENTER, css_classes=["flat"], tooltip_text="Select Folder", callback=Vault.select_folder))
+            group.add(r)
+        group = Adw.PreferencesGroup(title="Other")
+        page.add(group)
+        for i in ("idle", "config", "passfile", "ctlsock", "fsck", "masterkey", "nonempty", "allow_other", "ro", "exec"):
+            prop = getattr(Vault, i)
+            t = prop.type.name
+            title = prop.nick or i.replace("_", " ").title()
+            if t == "gchararray":
+                r = Adw.EntryRow()
+                vault.bind_property(i.replace("_", "-"), r, "text", SYNC_BIND)
+            elif t == "gboolean":
+                r = Adw.SwitchRow()
+                vault.bind_property(i.replace("_", "-"), r, "active", SYNC_BIND)
+            else: continue
+            r.set_title(title)
+            if i == "idle": r.set_tooltip_text("Durations are specified like \"500s\" or \"2h45m\"")
+            if i == "allow_other": r.set_tooltip_text("Only works if user_allow_other is set in /etc/fuse.conf")
+            group.add(r)
+        toolbar = Adw.ToolbarView(content=page)
+        toolbar.vault = vault
+        header = Adw.HeaderBar()
+        if self:
+            header.pack_end(Button(icon_name="user-trash", tooltip_text="Delete", callback=Vault.delete))
+            header.pack_end(Button(icon_name="document-edit", tooltip_text="Change Password", callback=Vault.change_password))
+        else: header.pack_end(Button(icon_name="list-add", tooltip_text="Add", callback=Vault.do_add))
+        toolbar.add_top_bar(header)
+        page = Adw.NavigationPage(title="Edit" if self else "New", child=toolbar)
+        Settings.get_content().push(page)
+
+    @staticmethod
+    def do_change_name(r):
+        text = r.get_text()
+        t = r.get_ancestor(Adw.ToolbarView)
+        if not hasattr(t, "vault"): return
+        if Vault.list[text]: return Toast(f"{text} already exists!")
+        t.vault.cypherdir = text
+
+    @staticmethod
+    def change_password(b):
+        toolbar = b.get_ancestor(Adw.ToolbarView)
+        if not hasattr(toolbar, "vault"): return
+        g = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, css_name="passwords")
+        p = Prompt(callback=Vault.do_change_password, heading="Change Password", extra_child=g)
+        p.add_css_class("vaults")
+        if not toolbar.vault.passfile: g.append(Gtk.PasswordEntry(placeholder_text="Master Key" if toolbar.vault.masterkey else "Password", show_peek_icon=True))
+        g.append(Gtk.PasswordEntry(placeholder_text="New Password", show_peek_icon=True))
+        p.vault = toolbar.vault
+        p.present(Settings)
+
+    @staticmethod
+    def do_change_password(p):
+        vault = p.vault
+        p.vault = None
+        data = []
+        command = [Vault.gocryptfs, "-nosyslog", "-passwd"]
+        if vault.config:
+            command.append("-config")
+            command.append(vault.config)
+        if vault.passfile:
+            command.append("-passfile")
+            command.append(vault.passfile)
+            data.append(p.get_extra_child().get_first_child().get_text())
+        else:
+            old, new = [i for i in p.get_extra_child()]
+            if vault.masterkey:
+                command.append("-masterkey")
+                command.append(old.get_text())
+                data.append(new.get_text())
+            else:
+                data.append(new.get_text())
+                data.append(old.get_text())
+        command.append(vault.cypherdir)
+        vault.lock()
+        if vault.masterkey:
+            f = Path(vault.cypherdir, "gocryptfs.conf.bak")
+            if exists(f): delete(f)
+        def r(spawner, text):
+            if "Please enter your new password." in text or "Repeat:" in text: spawner.write(data[0])
+            elif "Password:" in text: spawner.write(data[1])
+            if "passfile: could not read" in text:
+                Toast("Could not read from passfile")
+                return True
+            if "Password changed" in text:
+                Toast("Password changed")
+                return True
+            if "Password incorrect" in text:
+                Toast("Password incorrect")
+                return True
+            if "Could not parse master key" in text or "Master key has length" in text:
+                Toast("Master key incorrect")
+                return True
+            if "A copy of the old config file has been created at " in text:
+                Toast("Password changed")
+                delete(text.split(" at \"", 1)[-1].split("\"", 1)[0])
+                return True
+            if "Invalid cipherdir" in text:
+                Toast("Invalid cipherdir")
+                return True
+            if "annot open config file" in text:
+                Toast("Cannot open config file")
+                return True
+        Spawner(command, r, pty=True)
+
+    @staticmethod
+    def shutdown(data):
+        for i in data:
+            if hasattr(i, "shutdown"):
+                try: i.shutdown(True)
+                except: pass
+
+    def get_unlocker(self):
+        if self.passfile: return URIRow(title="Password File", multiple=False)
+        elif self.masterkey: return Gtk.PasswordEntry(placeholder_text="Master Key", show_peek_icon=True)
+        else: return Gtk.PasswordEntry(placeholder_text="Password", show_peek_icon=True)
+
+    @staticmethod
+    def delete(b):
+        toolbar = b.get_ancestor(Adw.ToolbarView)
+        if not hasattr(toolbar, "vault"): return
+        p = Prompt(callback=Vault.do_delete, heading="Delete Vault?", body="This will not delete any files/folders")
+        p.vault = toolbar.vault
+        p.present(Settings)
+
+    @staticmethod
+    def do_delete(p):
+        Vault.list.remove(p.vault)
+        p.vault.lock()
+        p.vault = None
+        Settings.get_content().pop()
+
+    @staticmethod
+    def do_add(b):
+        toolbar = b.get_ancestor(Adw.ToolbarView)
+        if not hasattr(toolbar, "vault"): return
+        if Vault.list[toolbar.vault.cypherdir]: return Toast(f"{toolbar.vault.cypherdir} already exists!")
+        Vault.list.append(toolbar.vault)
+        toolbar.vault.lock()
+        toolbar.vault = None
+        Settings.get_content().pop()
+
+    @staticmethod
+    def select_folder(b): Gtk.FileDialog().select_folder(Settings, None, Vault.do_select_folder, b)
+
+    @staticmethod
+    def do_select_folder(a, r, b):
+        try:
+            f = a.select_folder_finish(r).get_path()
+        except:
+            f = ""
+        r = b.get_ancestor(Adw.EntryRow)
+        if not r: return
+        r.set_text(f)
+        if r.get_show_apply_button(): r.emit("apply")
+
+class VaultItem(ListItem):
+    def __init__(self):
+        super().__init__(child=Adw.PreferencesGroup())
+        for i in ("cypherdir", "mountpoint"):
+            r = LabelRow(title=getattr(Vault, i).nick or i.title())
+            r.add_suffix(Button(name=i, icon_name="document-open", valign=Gtk.Align.CENTER, css_classes=["flat"], tooltip_text="Open Folder", callback=VaultItem.open_folder))
+            setattr(self, i, r)
+            self.get_child().add(r)
+        b = Gtk.Box()
+        b.append(Button(css_classes=["circular", "flat"], icon_name="document-edit", tooltip_text="Edit", callback=self.__class__.edit))
+        self.do_button = Button(css_classes=["circular", "flat"], callback=self.__class__.do)
+        self.do_button.bind_property("icon-name", self.do_button, "tooltip-text", DEFAULT_BIND, self.__class__.tooltip_bind)
+        b.append(self.do_button)
+        self.get_child().set_header_suffix(b)
+
+    @staticmethod
+    def do(b):
+        self = b.get_ancestor(VaultItem)
+        if not self or not self.item: return
+        if self.item.is_locked: self.item.unlock()
+        else: self.item.lock()
+
+    @staticmethod
+    def edit(b):
+        self = b.get_ancestor(VaultItem)
+        if not self or not self.item: return
+        self.item.edit()
+
+    @staticmethod
+    def open_folder(b):
+        r = b.get_ancestor(VaultItem)
+        if not r or not r.item: return
+        f = getattr(r.item, b.get_name(), None)
+        if not (isinstance(f, str) and f): return
+        AppChooser(options={"uri": uri_encode(f), "content_type": "inode/directory"})
+
+    def bind(self):
+        self.bindings.append(self.item.bind_property("name", self.get_child(), "title", DEFAULT_BIND, self.__class__.title_bind))
+        self.bindings.append(self.item.bind_property("cypherdir", self.cypherdir, "label", DEFAULT_BIND))
+        self.bindings.append(self.item.bind_property("mountpoint", self.mountpoint, "label", DEFAULT_BIND))
+        self.bindings.append(self.item.bind_property("is-locked", self.do_button, "icon-name", DEFAULT_BIND, self.__class__.icon_bind))
+
+    @staticmethod
+    def icon_bind(b, v): return "padlock-" + ("closed" if v else "open") + "-symbolic"
+
+    @staticmethod
+    def tooltip_bind(b, v): return "Lock" if v and "open" in v else "Unlock"
+
+    @staticmethod
+    def title_bind(b, v): return v or "Unnamed"
+
 class Settings(Window):
     APPEARANCE = "org.freedesktop.appearance"
     DESKTOP = "org.gnome.desktop.interface"
@@ -3839,12 +4255,13 @@ class Settings(Window):
             "Animations": ["reduced_motion"]
             },
         "Controllers": {},
+        "Vaults": {},
         "Desktop Portal": {
             "Lockdown": ["disable_printing", "disable_save_to_disk", "disable_application_handlers", "disable_location", "disable_camera", "disable_microphone", "disable_sound_output"]
         },
         "Advanced": {
             "Agents": ["polkit_agent", "notifications_agent", "player_agent"],
-            "Features": ["apps", "wallpaper", "background", "clipboard", "dbus", "wayland_client"],
+            "Features": ["apps", "wallpaper", "background", "clipboard", "dbus", "vaults", "wayland_client"],
             "Input": ["virtual_keyboard", "virtual_pointer", "primary_selection"],
             }
         }
@@ -3871,7 +4288,20 @@ class Settings(Window):
             header = Adw.HeaderBar()
             toolbar.add_top_bar(header)
             header.pack_start(Button(t=Gtk.ToggleButton, icon_name="sidebar-show", tooltip_text="Sidebar", bindings=[(view, "show-sidebar", None, "active", SYNC_BIND)]))
-            if page == "Controllers":
+            if page == "Vaults":
+                if Vault.gocryptfs:
+                    Vault.list = List(Vault, unique="cypherdir", static=True, list=App.default.data.read(table=Vault.table, return_dict=True, force_tuple=True))
+                    status = Adw.StatusPage(title="No Vaults", icon_name="system-lock-screen-symbolic")
+                    Vault.list.bind_property("n-items", status, "visible", DEFAULT_BIND, invert_bool_bind)
+                    v = Gtk.ListView(model=Gtk.NoSelection(model=Vault.list), factory=VaultItem.factory)
+                    v.set_css_classes([])
+                    p = Gtk.Overlay(child=Gtk.ScrolledWindow(child=v))
+                    p.add_overlay(status)
+                    p.add_css_class("vaults")
+                    header.pack_end(Button(icon_name="list-add", tooltip_text="Add", callback=Vault.new))
+                else:
+                    p = Adw.StatusPage(icon_name="system-lock-screen-symbolic", title="Could not find gocryptfs")
+            elif page == "Controllers":
                 self.controllers_agent = Data.setting("Controllers Agent", True)
                 status = Adw.StatusPage(title="No Controllers", icon_name="input-gaming-symbolic")
                 Controller.list.bind_property("n-items", status, "visible", DEFAULT_BIND, invert_bool_bind)
@@ -3887,6 +4317,7 @@ class Settings(Window):
             else:
                 p = GroupsPage()
             toolbar.set_content(p)
+            stack.add_titled(toolbar, page, page)
             if page == "Desktop Portal":
                 s = Gtk.Switch()
                 self.bind_property("portals", s, "active", SYNC_BIND)
@@ -3894,7 +4325,7 @@ class Settings(Window):
             if page == "User":
                 self.avatar = Adw.Avatar(show_initials=True, size=192)
                 o = Gtk.Overlay(child=self.avatar, halign=Gtk.Align.CENTER)
-                o.add_overlay(Button(css_classes=["circular", "avatar-edit"], halign=Gtk.Align.END, valign=Gtk.Align.END, tooltip_text="Edit", icon_name="document-edit", callback=self.__class__.avatar_edit_prompt))
+                o.add_overlay(Button(css_classes=["blur-background", "circular", "avatar-edit"], halign=Gtk.Align.END, valign=Gtk.Align.END, tooltip_text="Edit", icon_name="document-edit", callback=self.__class__.avatar_edit_prompt))
                 p.add(o)
                 g = Adw.PreferencesGroup()
                 p.add(g)
@@ -3977,7 +4408,6 @@ class Settings(Window):
                     r.set_title(title)
                     p.add(r)
                     self.connect(f"notify::{i.replace('_', '-')}", self.__class__.do_changed)
-            stack.add_titled(toolbar, page, page)
         stack.bind_property("visible-child-name", view.get_content(), "title", DEFAULT_BIND)
 
         self.__class__.instance = self
@@ -3986,11 +4416,11 @@ class Settings(Window):
     @staticmethod
     def start_controllers():
         try:
-            previous = GLib.spawn_command_line_sync("pactl list short")[1].decode().split("\n")
+            previous = Spawner("pactl list short").output.split("\n")
             for i in previous:
                 if "sink_name=shell-ds4" in i:
                     _id = i.split("\t", 1)[0]
-                    GLib.spawn_command_line_async(f"pactl unload-module {_id}")
+                    Spawner(f"pactl unload-module {_id}", detach=True)
         except: pass
         for i in list_dir("/dev"):
             if i.startswith("hidraw"): Task.invoke(Settings.try_hidraw, f"/dev/{i}")
@@ -3999,7 +4429,7 @@ class Settings(Window):
 
     @staticmethod
     def try_hidraw(device):
-        info = GLib.spawn_command_line_sync(f"udevadm info -t -q all -n {device}")[1].decode()
+        info = Spawner(f"udevadm info -t -q all -n {device}").output
         name = info.split("HID_NAME=", 1)[-1].split("\n", 1)[0]
         if name in ("Wireless Controller",): Controller(device, info, "bluetooth")
         elif name in ("Sony Computer Entertainment Wireless Controller", "Sony Interactive Entertainment Wireless Controller"): Controller(device, info, "usb")
@@ -4150,8 +4580,6 @@ class Settings(Window):
 
 class Authorize(EntryPrompt):
     cookie = GObject.Property(type=str)
-    stdout_channel = GObject.Property(type=GLib.IOChannel)
-    stdin_channel = GObject.Property(type=GLib.IOChannel)
     invocation = GObject.Property(type=Gio.DBusMethodInvocation)
 
     def __init__(self, invocation, args):
@@ -4164,36 +4592,19 @@ class Authorize(EntryPrompt):
     @staticmethod
     def do(self, r):
         if r == "cancel" or not self.invocation: return self.finish()
-        if FLATPAK_ID:
-            success, pid, stdin_fd, stdout_fd, stderr_fd = GLib.spawn_async_with_pipes(None, ["/bin/flatpak-spawn", "--host", "/usr/lib/polkit-1/polkit-agent-helper-1", GLib.getenv("USER"), self.cookie], None, GLib.SpawnFlags.DEFAULT | GLib.SpawnFlags.CHILD_INHERITS_STDERR, None, None)
-        else:
-            success, pid, stdin_fd, stdout_fd, stderr_fd = GLib.spawn_async_with_pipes(None, ["/usr/lib/polkit-1/polkit-agent-helper-1", GLib.getenv("USER"), self.cookie], ["LC_ALL=C"], GLib.SpawnFlags.DEFAULT | GLib.SpawnFlags.CHILD_INHERITS_STDERR, None, None)
-        if not success: return self.finish()
-        self.stdin_channel = GLib.IOChannel.unix_new(stdin_fd)
-        self.stdin_channel.set_encoding("utf-8")
-        self.stdout_channel = GLib.IOChannel.unix_new(stdout_fd)
-        GLib.io_add_watch(self.stdout_channel, GLib.PRIORITY_DEFAULT, GLib.IOCondition.IN, self.__class__.communicate, self)
-        GLib.io_add_watch(self.stdin_channel, GLib.PRIORITY_DEFAULT, GLib.IOCondition.OUT, self.__class__.communicate, self)
-
-    @staticmethod
-    def communicate(channel, condition, self):
-        if not self.invocation: return
-        if channel == self.stdin_channel:
-            channel.write_chars(self.get_extra_child().get_text().encode(), -1)
-            channel.flush()
-            channel.write_chars("\n".encode(), -1)
-            channel.flush()
-        elif channel == self.stdout_channel:
-            message = channel.read_to_end()[-1].decode()
-            if "SUCCESS" in message: self.finish()
-            if "FAILURE" in message:
+        def r(spawner, text):
+            if not self.invocation: return True
+            if "SUCCESS" in text:
+                self.finish()
+                return True
+            elif "FAILURE" in text:
                 self.get_extra_child().set_text("")
                 self.get_extra_child().set_property("placeholder-text", "Try Again...")
                 self.present()
+            else: spawner.write(self.get_extra_child().get_text().encode())
+        Spawner(["/usr/lib/polkit-1/polkit-agent-helper-1", GLib.getenv("USER"), self.cookie], r)
 
     def finish(self):
-        for i in (self.stdout_channel, self.stdin_channel):
-            if i: i.shutdown(True)
         if self.invocation: self.invocation.return_value(None)
         self.invocation = None
 
@@ -4271,7 +4682,7 @@ class ScreenCast(CancellablePrompt):
             if not hasattr(self, "audios"):
                 self.audios = {"None": False}
             if not self.gpu_screen_recorder:
-                lines = GLib.spawn_command_line_sync("wpctl status")[1].decode().splitlines()
+                lines = Spawner("wpctl status").output.splitlines()
                 result = []
                 for n, i in enumerate(lines):
                     if i == "Audio":
@@ -4296,7 +4707,7 @@ class ScreenCast(CancellablePrompt):
                     previous = i.split(".", 1)[0].replace("│", "").replace("*", "").strip()
                 if previous: result.append(previous)
                 for _id in result:
-                    r = GLib.spawn_command_line_sync(f"wpctl inspect {_id}")[1].decode()
+                    r = Spawner(f"wpctl inspect {_id}").output.decode()
                     if not "object.serial = \"" in r: continue
                     name = ""
                     for i in ("media.name", "node.description"):
@@ -4323,12 +4734,12 @@ class ScreenCast(CancellablePrompt):
 
     @staticmethod
     def get_gsr_options(self):
-        r = str_to_list(GLib.spawn_command_line_sync(f"{ImageCopy.gsr} --list-capture-options")[1].decode())
+        r = str_to_list(Spawner(f"{ImageCopy.gsr} --list-capture-options").output)
         self.videos["Select Area"] = "Select Area"
         self.videos.update(dict((i.split("|", 1)[0], i.split("|", 1)[0]) for i in r if not i in ("portal", "region")))
         self.audios = {"None": False}
         for i in ("audio-devices", "application-audio"):
-            r = str_to_list(GLib.spawn_command_line_sync(f"{ImageCopy.gsr} --list-{i}")[1].decode())
+            r = str_to_list(Spawner(f"{ImageCopy.gsr} --list-{i}").output)
             for it in r:
                 if it.startswith(("default_output", "default_input")): continue
                 self.audios[it.split("|", 1)[-1]] = ("device:" if "device" in i else "app:") + it.split("|", 1)[0]
@@ -4364,7 +4775,7 @@ class ScreenCast(CancellablePrompt):
             bus.add_signal_watch()
             bus.connect("message", ScreenCast.do_finish, pipeline)
             pipeline.send_event(Gst.Event.new_eos())
-        if hasattr(d, "pid"): GLib.spawn_command_line_sync(f"pkill -SIGINT -p {d.pid}")
+        if hasattr(d, "pid"): Spawner(f"pkill -SIGINT -p {d.pid}")
 
     @staticmethod
     def do_finish(bus, message, pipeline):
@@ -4410,7 +4821,7 @@ class ScreenCast(CancellablePrompt):
                     if isinstance(video, Gdk.Monitor): command.extend(["-w", f"{w}x{h}+{x}+{y}"])
                     else: command.extend(["-w", video])
                 if audio: command.extend(["-a", audio])
-                success, p.pid, stdin_fd, stdout_fd, stderr_fd = GLib.spawn_async_with_pipes(argv=command, flags=GLib.SpawnFlags.DEFAULT | GLib.SpawnFlags.CHILD_INHERITS_STDERR)
+                p.pid = Spawner(command, detach=True).pid
             else:
                 pipeline = p.pipeline = Gst.parse_launch(plaunch.strip())
                 pipeline.get_by_name("File").set_property("location", self.file.get_uri() if self.file else self.get_filename())
@@ -4481,8 +4892,8 @@ class ScreenCast(CancellablePrompt):
         pipeline.source.emit("push-buffer", buffer)
         if not hasattr(pipeline, "node_id"):
             try:
-                pipeline.node_id = int(GLib.spawn_command_line_sync("wpctl status")[1].decode().split(". " + pipeline.pipewire.get_property("client-name"), 1)[0].rsplit(" ", 1)[-1])
-                pipeline.serial = int(GLib.spawn_command_line_sync(f"wpctl inspect {pipeline.node_id}")[1].decode().split("object.serial = \"", 1)[-1].split("\"", 1)[0])
+                pipeline.node_id = int(Spawner("wpctl status").output.split(". " + pipeline.pipewire.get_property("client-name"), 1)[0].rsplit(" ", 1)[-1])
+                pipeline.serial = int(Spawner(f"wpctl inspect {pipeline.node_id}").output.split("object.serial = \"", 1)[-1].split("\"", 1)[0])
             except: pass
         if hasattr(pipeline, "node_id") and ScreenCast.sessions[proxy.session]["Invocations"]:
             for i in [i for i in ScreenCast.sessions[proxy.session]["Invocations"]]:
@@ -4667,6 +5078,11 @@ class App(App):
         App.default.data.data.close()
         for i in [i for i in Controller.list]: i.remove()
 
+    @staticmethod
+    def default_show_about(*_):
+        if App.default.about.get_mapped(): App.default.about.close()
+        App.default.about.present(Settings if Settings.get_visible() and Settings.get_mapped() else None)
+
 class Portal:
     @staticmethod
     def handle_dbus(dbus=None, connection=None, sender=None, path=None, i="", m="", p=None, inv=None):
@@ -4713,7 +5129,7 @@ class Portal:
         if m == "ChooseApplication":
             if p[-1].get("content_type", "") == "application/x-executable":
                 f = p[-1].get("uri", "").split("file://", 1)[-1]
-                GLib.spawn_command_line_async(f'sh -c "cd \"{get_parent(f)}\" && exec \"./{basename(f)}\""')
+                Spawner(f'sh -c "cd \"{get_parent(f)}\" && exec \"./{basename(f)}\""', detach=True)
                 return inv.return_value(GLib.Variant("(ua{sv})", (0, {"choice": GLib.Variant("s", "executed"), "activation_token": GLib.Variant("s", p[-1]["activation_token"])})))
             else: return AppChooser(inv, *p)
         if m == "UpdateChoices":
@@ -4817,7 +5233,7 @@ register_adapter(dict, json_string)
 register_adapter(list, json_string)
 register_adapter(tuple, json_string)
 
-App(data="CREATE TABLE IF NOT EXISTS Settings (Key TEXT PRIMARY KEY NOT NULL, Value TEXT);", info=INFO, activate=nothing, file_open=App.file_open, shutdown=App.shutdown, log=False)
+App(data=(DesktopApp, LastUsed, Vault, "CREATE TABLE IF NOT EXISTS Settings (Key TEXT PRIMARY KEY NOT NULL, Value TEXT);"), info=INFO, activate=nothing, file_open=App.file_open, shutdown=App.shutdown, log=False)
 
 VALUE = r"(?:#(?:[0-9A-Fa-f]{6}|[0-9A-Fa-f]{3})|rgb\(\s*\d+(?:\.\d+)?\s*,\s*\d+(?:\.\d+)?\s*,\s*\d+(?:\.\d+)?\s*\)|rgba\(\s*\d+(?:\.\d+)?\s*,\s*\d+(?:\.\d+)?\s*,\s*\d+(?:\.\d+)?\s*,\s*(?:0|1|0?\.\d+)\s*\)|hsl\(\s*\d{1,3}(?:\.\d+)?\s*,\s*\d{1,3}(?:\.\d+)?%\s*,\s*\d{1,3}(?:\.\d+)?%\s*\)|hsla\(\s*\d{1,3}(?:\.\d+)?\s*,\s*\d{1,3}(?:\.\d+)?%\s*,\s*\d{1,3}(?:\.\d+)?%\s*,\s*(?:0|1|0?\.\d+)\s*\))"
 COLOR = Regex(VALUE)
@@ -4850,19 +5266,19 @@ wallpaper.overview overlay > before { backdrop-filter: blur(10px); }
 .player:hover controls { opacity: 1; }
 
 apps:drop(active) { box-shadow: none; outline: none; }
-apps:drop(active) .highlight { box-shadow: 0 0 0 2px var(--accent-bg-color); }
+apps:drop(active) .highlight { outline-width: 2px; outline-offset: -2px; outline-color: color-mix(in srgb, var(--accent-color) 50%, transparent); }
 apps overlay > box { border-spacing: 4px; }
 apps overlay > box > label { font-size: 42px; font-weight: bold; }
 apps overlay > box > label,
 apps gridview { border-spacing: 0px 60px; background: none; padding: 40px; border-radius: 22px; margin: 0px; }
-apps gridview child { padding: 0px; }
-apps gridview image { -gtk-icon-size: 256px; filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.3)); color: white; border-radius: 13px; padding: 12px; transition: all 0.2s; }
+apps gridview child { padding: 0px; border-radius: 13px; }
+apps gridview desktop-app-item { outline: 0 solid transparent; -gtk-icon-size: 256px; filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.3)); color: white; border-radius: 13px; padding: 12px; transition: all 0.2s; }
 
 .appeditor preferencesgroup { padding: 0px 6px 6px 6px; }
 
 .appchooser gridview { padding: 0px 6px 6px 6px; }
 .appchooser gridview child { border-radius: 13px; padding: 6px; transition: all 0.2s; filter: drop-shadow(0 1px 1px rgba(0,0,0, 0.3)); }
-.appchooser gridview image { -gtk-icon-size: 100px; }
+.appchooser gridview desktop-app-item { -gtk-icon-size: 100px; }
 
 .palette colorbutton:first-child button { border-radius: 15px 15px 0px 0px; }
 .palette colorbutton:last-child button { border-radius: 0px 0px 15px 15px; }
@@ -4879,7 +5295,7 @@ keyboard row:first-child .key:last-child { border-radius: 0px 15px 0px 0px; }
 keyboard row:last-child .key:first-child { border-radius: 0px 0px 0px 15px; }
 keyboard row:last-child .key:last-child { border-radius: 0px 0px 15px 0px; }
 keyboard .modifier label,
-keyboard #Esc label { font-weight: bold; }
+keyboard nEsc label { font-weight: bold; }
 keyboard .key#Esc label { transform: scale(1.25); }
 
 .clipboard colorbutton button,
@@ -4896,16 +5312,21 @@ keyboard .key#Esc label { transform: scale(1.25); }
 .notifications listview { background: none; border-spacing: 6px; padding: 0px 6px 6px 6px; }
 .notifications listview row { padding: 0px; border-radius: 12px; }
 .notifications notification { min-height: 82px; padding: 6px 6px 0px 6px; }
-.notifications notification > box > image { margin-bottom: 6px; border-radius: 12px; }
+.notifications notification > overlay > box > image { margin-bottom: 6px; border-radius: 12px; }
 .notifications notification scrolledwindow > viewport > box { padding: 0px 6px 0px 6px; }
 .notifications notification .summary { font-size: 18px; }
 .notifications notification .close { opacity: 0; transition: opacity 0.3s; min-height: 20px; min-width: 20px; }
 .notifications notification:hover .close,
 .notifications notification:focus-within .close { opacity: 1; }
 
+.vaults listview,
 .controllers listview { background: none; border-spacing: 22px; padding: 0px 22px 22px 22px; }
 
-.settings .avatar-edit { margin: 10px; backdrop-filter: blur(20px) brightness(0.9); color: white; }
+.vaults preferencesgroup .header > box { border-spacing: 4px; }
+.vaults passwords { border-spacing: 8px; }
+.vaults master-key { padding: 10px; }
+
+.settings .avatar-edit { margin: 10px; }
 
 .prepare-install .child > box { border-spacing: 10px; }
 .prepare-install .child > box > image { filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.3)); }
@@ -4939,18 +5360,25 @@ AUTHENTICATION_DBUS = {
         },}}
 
 def main():
+    l = [App.default.data_folder.get_path(), "/usr/bin", "/bin"]
+    if FLATPAK_ID: l.extend(["/run/host/root/bin", "/run/host/root/usr/bin"])
+    for i in l:
+        f = Path(i, "gocryptfs")
+        if exists(f):
+            Vault.gocryptfs = f
+            break
     Settings()
+    global PORTAL_DBUS, SESSION
     if Settings.portals:
-        global PORTAL_DBUS
         PORTAL_DBUS = DBUS(PORTAL_DBUS, f"{PT_ID}.desktop.Shell", "/org/freedesktop/portal/desktop", Portal.handle_dbus)
         if not FLATPAK_ID:
             try:
                 Install.do_desktop(INFO)
-                default_browser = GLib.spawn_command_line_sync("xdg-settings get default-web-browser")[1].decode().strip()
+                default_browser = Spawner("xdg-settings get default-web-browser").output.strip()
                 d = f"{INFO['ID']}.desktop"
-                if default_browser != d: GLib.spawn_command_line_sync(f"/usr/bin/xdg-settings set default-web-browser {d}")
-            except: pass
-    global SESSION
+                if default_browser != d: Spawner(f"/usr/bin/xdg-settings set default-web-browser {d}")
+            except:
+                SESSION = False
     try:
         SESSION = Gio.bus_get_sync(Gio.BusType.SESSION)
     except:
@@ -4959,14 +5387,17 @@ def main():
         try:
             AUTHENTICATION_AGENT = DBUS(AUTHENTICATION_DBUS, None, DBUS.path(tuple(AUTHENTICATION_DBUS.keys())[0]), Authorize.handle_dbus, bus_type=Gio.BusType.SYSTEM)
             Gio.DBusProxy.new_sync(AUTHENTICATION_AGENT.bus, Gio.DBusProxyFlags.NONE, None, AU_ID, DBUS.path(AU_ID) + "/Authority", f"{AU_ID}.Authority", None).call_sync("RegisterAuthenticationAgent", GLib.Variant("((sa{sv})ss)", (("unix-session", {"session-id": GLib.Variant("s", GLib.getenv("XDG_SESSION_ID"))}), GLib.get_language_names()[0], AUTHENTICATION_AGENT.register)), Gio.DBusCallFlags.ALLOW_INTERACTIVE_AUTHORIZATION, GLib.MAXINT, None)
-        except Exception as e:
-            print("PolkitAgent:", e)
+        except Exception as e: print("PolkitAgent:", e)
     if Settings.dbus: DBUS(SHELL_DBUS, INFO["ID"], DBUS.path(INFO["ID"]), App.handle_dbus)
     if GLib.getenv("NIRI_SOCKET"): Niri()
     if GLib.getenv("WAYFIRE_SOCKET"): Wayfire()
     if Settings.wayland_client: Wayland()
     if Settings.player_agent and SESSION: Player()
     if Settings.notifications_agent: Notifications()
+    if hasattr(Vault, "list"):
+        Vault.sync_all()
+        for i in Vault.list:
+            if i.is_locked and i.prompt_at_startup: i.unlock()
     App.default.main(css=APP_CSS)
 
 if __name__ == "__main__": main()
