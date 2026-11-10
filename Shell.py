@@ -3835,7 +3835,6 @@ class Vault(ListObject):
 
     test = GObject.Property(type=str)
 
-    table = "Vaults"
     properties = ["name", "prompt_at_startup", "cypherdir", "mountpoint", "passfile", "allow_other", "idle", "config", "ctlsock", "fsck", "masterkey", "nonempty", "ro", "exec"]
 
     is_locked = GObject.Property(type=bool, default=True)
