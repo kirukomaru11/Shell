@@ -2471,7 +2471,7 @@ class DesktopApp(ListObject):
 
     table = "Apps"
     properties = ["custom", "id", "name", "hidden", "command", "icon", "mimetypes"]
-    properties_extra = {"ID": "PRIMARY_KEY"}
+    properties_extra = {"ID": "PRIMARY_KEY", "MimeTypes": "TEXT"}
 
     def __init__(self, path="", data=None, **kwargs):
         super().__init__(**kwargs)
@@ -3832,8 +3832,6 @@ class Vault(ListObject):
     nonempty = GObject.Property(nick="Allow mounting over non-empty directory", type=bool, default=False)
     ro = GObject.Property(nick="Mount read-only", type=bool, default=False)
     exec = GObject.Property(nick="Allow executables", type=bool, default=False)
-
-    test = GObject.Property(type=str)
 
     properties = ["name", "prompt_at_startup", "cypherdir", "mountpoint", "passfile", "allow_other", "idle", "config", "ctlsock", "fsck", "masterkey", "nonempty", "ro", "exec"]
 
