@@ -1581,7 +1581,7 @@ class Keyboard(LayerShell):
         self._x = max(min(av, value), 0)
         l = layer_shell
         l.set_margin(self, l.Edge.RIGHT, max(min(av, av - value), 0))
-        Data.setting("Keyboard Position X", 0, self._x)
+        DataSetting["Keyboard Position X"] = self._x
 
     @GObject.Property(type=int, default=0, minimum=0)
     def y(self): return getattr(self, "_y", 0)
@@ -1592,7 +1592,7 @@ class Keyboard(LayerShell):
         self._y = max(min(av, value), 0)
         l = layer_shell
         l.set_margin(self, l.Edge.BOTTOM, max(min(av, av - value), 0))
-        Data.setting("Keyboard Position Y", 0, self._y)
+        DataSetting["Keyboard Position Y"] = self._y
 
     def __init__(self):
         if not Settings.virtual_keyboard: return
@@ -1825,7 +1825,7 @@ class Keyboard(LayerShell):
         Adw.Window.present(self)
         if not hasattr(self, "_x"):
             self.realize()
-            for i in ("x", "y"): Task.invoke(setattr, self, i, int(Data.setting(f"Keyboard Position {i.upper()}", 0)))
+            for i in ("x", "y"): Task.invoke(setattr, self, i, int(DataSetting[f"Keyboard Position {i.upper()}"] or 0))
 
     def close(self):
         for i in self.keys.values():
@@ -1943,9 +1943,9 @@ class Notifications(Window):
         view = Gtk.ListView(model=Gtk.NoSelection(model=Notification.list), factory=NotificationItem.factory)
         view.set_css_classes([])
         overlay = Gtk.Overlay(child=Gtk.ScrolledWindow(child=view))
-        self.do_not_disturb = int(Data.setting("Do Not Disturb", False))
+        self.do_not_disturb = DataSetting["Do Not Disturb"] or False
         self.connect("notify::do-not-disturb", self.__class__.dnd_changed)
-        self.pause = int(Data.setting("Clipboard Pause", False))
+        self.pause =  DataSetting["Notifications Pause"] or False
         self.connect("notify::pause", self.__class__.pause_changed)
         empty = Adw.StatusPage(title="Empty", icon_name="preferences-system-notifications-symbolic")
         Notification.list.bind_property("n-items", empty, "visible", DEFAULT_BIND, invert_bool_bind)
@@ -1959,10 +1959,12 @@ class Notifications(Window):
         self.__class__.instance = self
 
     @staticmethod
-    def dnd_changed(self, p): Data.setting("Do Not Disturb", False, self.do_not_disturb)
+    def dnd_changed(self, p):
+         DataSetting["Do Not Disturb"] = self.do_not_disturb
 
     @staticmethod
-    def pause_changed(b, p): Data.setting("Notifications Pause", False, self.pause)
+    def pause_changed(b, p):
+        DataSetting["Notifications Pause"] = self.pause
 
     @staticmethod
     def on_key_pressed(e, v, c, s):
@@ -2207,7 +2209,7 @@ class Clipboard(Window):
         self.__class__.instance = self
         self.masonry = Masonry()
         overlay = Gtk.Overlay(child=self.masonry)
-        self.pause = int(Data.setting("Clipboard Pause", False))
+        self.pause = DataSetting["Clipboard Pause"] or False
         self.connect("notify::pause", self.__class__.pause_changed)
         self.empty, self.no_results = Adw.StatusPage(title="Empty", icon_name="edit-paste-symbolic", visible=True), Adw.StatusPage(title="No Results", icon_name="edit-find-symbolic", visible=False)
         overlay.add_overlay(self.empty)
@@ -2235,7 +2237,8 @@ class Clipboard(Window):
         self.no_results.set_visible(self.search and not any(i.get_visible() for i in self.masonry.children))
 
     @staticmethod
-    def pause_changed(self, p): Data.setting("Clipboard Pause", False, self.pause)
+    def pause_changed(self, p):
+        DataSetting["Clipboard Pause"] = self.pause
 
     @staticmethod
     def do():
@@ -4299,7 +4302,8 @@ class Settings(Window):
                 else:
                     p = Adw.StatusPage(icon_name="system-lock-screen-symbolic", title="Could not find gocryptfs")
             elif page == "Controllers":
-                self.controllers_agent = Data.setting("Controllers Agent", True)
+                v = DataSetting["Controllers Agent"]
+                self.controllers_agent = v if v != None else True
                 status = Adw.StatusPage(title="No Controllers", icon_name="input-gaming-symbolic")
                 Controller.list.bind_property("n-items", status, "visible", DEFAULT_BIND, invert_bool_bind)
                 v = Gtk.ListView(model=Gtk.NoSelection(model=Controller.list), factory=ControllerItem.factory)
@@ -4328,8 +4332,8 @@ class Settings(Window):
                 p.add(g)
                 p.add(Adw.EntryRow(title="ID", text=GLib.getenv("USER"), sensitive=False))
                 r = Adw.EntryRow(title="Name")
-                self.user_avatar = Data.setting("User Avatar", "")
-                self.user_name = Data.setting("User Name", "")
+                self.user_avatar = DataSetting["User Avatar"] or ""
+                self.user_name = DataSetting["User Name"] or ""
                 self.connect("notify::user-avatar", self.__class__.do_changed)
                 self.connect("notify::user-name", self.__class__.do_changed)
                 self.bind_property("user-name", r, "text", SYNC_BIND)
@@ -4355,47 +4359,50 @@ class Settings(Window):
                     title = prop.nick or i.replace("_", " ").title()
                     if t == "GdkRGBA":
                         if i == "accent_color":
-                            self.accent_color = RGBA(s=Data.setting(title, "#3584e4"))
+                            self.accent_color = RGBA(s=DataSetting[title] or "#3584e4")
                             self.bind_property(i, Gtk.Settings.get_default(), "gtk-accent-color", DEFAULT_BIND)
                         r = ColorRow()
                         self.bind_property(i, r, "rgba", SYNC_BIND)
                     elif t == "AdwColorScheme" and i == "color_scheme":
-                        self.color_scheme = Adw.ColorScheme.FORCE_DARK if Data.setting(title, "Light") == "Dark" else Adw.ColorScheme.FORCE_LIGHT
+                        self.color_scheme = Adw.ColorScheme.FORCE_DARK if DataSetting[title] == "Dark" else Adw.ColorScheme.FORCE_LIGHT
                         self.bind_property(i, App.default.get_style_manager(), "color-scheme", DEFAULT_BIND)
                         r = ToggleGroupRow(toggles=[Adw.Toggle(label=i, name=i, icon_name=ii + "-symbolic") for i, ii in (("Light", "weather-clear"), ("Dark", "weather-clear-night"),)])
                         self.bind_property(i, r, "active", SYNC_BIND, self.__class__.color_bind, self.__class__.color_bind)
                     elif t == "PangoFontDescription":
                         if i == "font":
-                            self.font = Pango.FontDescription.from_string(Data.setting(title, "Adwaita Sans 11"))
+                            self.font = Pango.FontDescription.from_string(DataSetting[title] or "Adwaita Sans 11")
                             self.bind_property(i, Gtk.Settings.get_default(), "gtk-font-name", DEFAULT_BIND, font_bind)
                         if i == "document_font":
-                            self.document_font = Pango.FontDescription.from_string(Data.setting(title, "Adwaita Sans 12"))
+                            self.document_font = Pango.FontDescription.from_string(DataSetting[title] or "Adwaita Sans 12")
                         if i == "monospace_font":
-                            self.monospace_font = Pango.FontDescription.from_string(Data.setting(title, "Adwaita Mono 11"))
+                            self.monospace_font = Pango.FontDescription.from_string(DataSetting[title] or "Adwaita Mono 11")
                         r = FontRow(button_kwargs={"use_font": True})
                         self.bind_property(i, r, "font_desc", SYNC_BIND)
                     elif t == "gchararray":
                         if i == "theme":
-                            self.theme = Data.setting(title, "Adwaita-empty")
+                            self.theme = DataSetting[title] or "Adwaita-empty"
                             self.bind_property(i, Gtk.Settings.get_default(), "gtk-theme-name", DEFAULT_BIND)
                         if i == "button_layout":
-                            self.button_layout = Data.setting(title, ":close")
+                            v = DataSetting[title]
+                            self.button_layout = v if v != None else ":close"
                             self.bind_property(i, Gtk.Settings.get_default(), "gtk-decoration-layout", DEFAULT_BIND)
                         if i == "icon_theme":
-                            self.icon_theme = Data.setting(title, "Adwaita")
+                            self.icon_theme = DataSetting[title] or "Adwaita"
                             self.bind_property(i, Gtk.Settings.get_default(), "gtk-icon-theme-name", DEFAULT_BIND)
                         r = Adw.EntryRow()
                         self.bind_property(i, r, "text", SYNC_BIND)
                     elif t == "gdouble":
                         if i == "text_scaling_factor":
-                            self.text_scaling_factor = float(Data.setting(title, 1.0))
+                            v = DataSetting[title]
+                            self.text_scaling_factor = float(v if v != None else 1.0)
                         n = len(str(prop.minimum)) - 2
                         step = 10 ** -(n)
                         r = Adw.SpinRow.new_with_range(prop.minimum, prop.maximum, float(f"{step:.{n}f}"))
                         r.set_digits(n)
                         self.bind_property(i, r, "value", SYNC_BIND)
                     elif t == "gboolean":
-                        setattr(self, i, Data.setting(title, prop.default))
+                        v = DataSetting[title]
+                        setattr(self, i, v if v != None else prop.default)
                         if i == "reduced_motion": self.bind_property(i, Gtk.Settings.get_default(), "gtk-interface-reduced-motion", DEFAULT_BIND)
                         if i == "high_contrast": self.bind_property(i, Gtk.Settings.get_default(), "gtk-interface-contrast", DEFAULT_BIND, self.__class__.contrast_bind)
                         if i == "primary_selection": self.bind_property(i, Gtk.Settings.get_default(), "gtk-enable-primary-paste", DEFAULT_BIND)
@@ -4547,24 +4554,24 @@ class Settings(Window):
         value = None
         if isinstance(v, Gdk.RGBA):
             if name == "accent_color":
-                Data.setting(title, "#3584e4", Palette.get_hex(v))
+                DataSetting[title] = Palette.get_hex(v)
             value = GLib.Variant.new_tuple(*tuple(GLib.Variant("d", i) for i in RGBA.rgb(v, True)))
         if isinstance(v, Pango.FontDescription):
             v = v.to_string()
         if type(v) == str:
-            Data.setting(title, "", v)
+            DataSetting[title] = v
             value = get_variant(v)
         if type(v) == bool:
-            Data.setting(title, False, v)
+            DataSetting[title] = v
             if name in ("high_contrast", "reduced_motion"):
                 value = GLib.Variant.new_uint32(int(v))
             else:
                 value = get_variant(v)
         if type(v) == float:
-            Data.setting(title, 1.0, v)
+            DataSetting[title] = v
             value = get_variant(self.text_scaling_factor)
         if name == "color_scheme":
-            Data.setting(title, "Light", "Light" if v == Adw.ColorScheme.FORCE_LIGHT else "Dark")
+            DataSetting[title] = "Light" if v == Adw.ColorScheme.FORCE_LIGHT else "Dark"
             value = GLib.Variant.new_uint32(1 if v == Adw.ColorScheme.FORCE_DARK else 2 if v == Adw.ColorScheme.FORCE_LIGHT else 0)
         namespace, name = Settings.name_to_portal(name)
         if get: return (namespace, name, value) if namespace else None
@@ -5230,7 +5237,7 @@ register_adapter(dict, json_string)
 register_adapter(list, json_string)
 register_adapter(tuple, json_string)
 
-App(data=(DesktopApp, LastUsed, Vault, "CREATE TABLE IF NOT EXISTS Settings (Key TEXT PRIMARY KEY NOT NULL, Value TEXT);"), info=INFO, activate=nothing, file_open=App.file_open, shutdown=App.shutdown, log=False)
+App(data=(DesktopApp, LastUsed, Vault, DataSetting), info=INFO, activate=nothing, file_open=App.file_open, shutdown=App.shutdown, log=False)
 
 VALUE = r"(?:#(?:[0-9A-Fa-f]{6}|[0-9A-Fa-f]{3})|rgb\(\s*\d+(?:\.\d+)?\s*,\s*\d+(?:\.\d+)?\s*,\s*\d+(?:\.\d+)?\s*\)|rgba\(\s*\d+(?:\.\d+)?\s*,\s*\d+(?:\.\d+)?\s*,\s*\d+(?:\.\d+)?\s*,\s*(?:0|1|0?\.\d+)\s*\)|hsl\(\s*\d{1,3}(?:\.\d+)?\s*,\s*\d{1,3}(?:\.\d+)?%\s*,\s*\d{1,3}(?:\.\d+)?%\s*\)|hsla\(\s*\d{1,3}(?:\.\d+)?\s*,\s*\d{1,3}(?:\.\d+)?%\s*,\s*\d{1,3}(?:\.\d+)?%\s*,\s*(?:0|1|0?\.\d+)\s*\))"
 COLOR = Regex(VALUE)
