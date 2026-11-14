@@ -3217,12 +3217,15 @@ class ImageCopy:
         return crop
 
     @staticmethod
-    def capture_frame(source=None, cursor=False, add_user=True):
+    def capture_frame(source=None, cursor=False, add_user=True, session=False):
         frame = None
         if not source:
             source = Gdk.Display.get_default().get_monitors()[0]
         if getattr(ImageCopy, "capture_manager", False):
-            session = next((i for i in ImageCopy.sessions if i["Source"] == source and i["Show Cursor"] == cursor), False)
+            if session:
+                existing = False
+            else:
+                existing = session = session or next((i for i in ImageCopy.sessions if i["Source"] == source and i["Show Cursor"] == cursor), False)
             if session:
                 if add_user:
                     session["Users"] += 1
@@ -3236,6 +3239,7 @@ class ImageCopy:
                 s.destroy()
                 ImageCopy.sessions.append(session)
                 session["Session"].dispatcher(ImageCopy.session_dispatcher)
+            if not hasattr(session["Session"], "buffer"):
                 Gdk.Display.get_default().sync()
                 if not hasattr(session["Session"], "format"):
                     session["Session"].destroy()
@@ -3251,6 +3255,7 @@ class ImageCopy:
             frame.width, frame.height, frame.format = session["Session"].width, session["Session"].height, session["Session"].format
             frame.capture_session = session["Session"]
             frame.attach_buffer(session["Session"].buffer)
+            if not existing: frame.damage_buffer(0, 0, session["Session"].width, session["Session"].height)
             frame.capture()
         elif isinstance(source, Gdk.Monitor):
             frame = ImageCopy.manager.capture_output(int(cursor), gtk_get_pointer(source, "gdk_wayland_monitor_get_wl_output"))
@@ -3360,15 +3365,25 @@ class ImageCopy:
                 if not hasattr(proxy, "buffer"):
                     proxy.buffer = ImageCopy.create_shm_buffer(format=proxy.format, height=proxy.height, width=proxy.width, stride=proxy.stride)
                 proxy.copy_with_damage(proxy.buffer)
-        elif event in ("ready", "failed"):
-            if event == "ready" and hasattr(proxy, "do_ready") and hasattr(proxy, "buffer"): proxy.do_ready(proxy, proxy.buffer.data)
-            elif event == "ready" and hasattr(proxy, "do_ready") and hasattr(proxy, "capture_session") and hasattr(proxy.capture_session, "buffer"): proxy.do_ready(proxy, proxy.capture_session.buffer.data)
+        elif event == "failed":
+            if args[0] == 2: ImageCopy.destroy_object(proxy)
+            elif hasattr(proxy, "capture_session"):
+                session = next((i for i in ImageCopy.sessions if i["Session"] == proxy.capture_session), False)
+                if session:
+                    ImageCopy.destroy_object(session["Session"].buffer)
+                    del session["Session"].buffer
+                    Task.invoke(ImageCopy.new_frame, proxy, session=session)
+                else: ImageCopy.destroy_object(proxy)
+        elif event == "ready":
+            if hasattr(proxy, "do_ready") and hasattr(proxy, "buffer"): proxy.do_ready(proxy, proxy.buffer.data)
+            elif hasattr(proxy, "do_ready") and hasattr(proxy, "capture_session") and hasattr(proxy.capture_session, "buffer"): proxy.do_ready(proxy, proxy.capture_session.buffer.data)
             ImageCopy.destroy_object(proxy)
 
     @staticmethod
     def destroy_object(o):
-        MediaStream.destroy_pipeline(o)
+        if isinstance(o, Gst.Bin): MediaStream.destroy_pipeline(o)
         if hasattr(o, "pipeline"): ImageCopy.destroy_object(o.pipeline)
+        if hasattr(o, "destroy"): o.destroy()
         if hasattr(o, "children") and hasattr(o, "proxy"): ImageCopy.destroy_object(o.proxy)
         if hasattr(o, "params"): o.params.destroy()
         if hasattr(o, "data"):
@@ -3378,7 +3393,8 @@ class ImageCopy:
             if o.buffer:
                 ImageCopy.destroy_object(o.buffer)
                 o.buffer.destroy()
-        if hasattr(o, "session") and o.session in ScreenCast.sessions: del ScreenCast.sessions[o.session]
+        if hasattr(o, "session") and o.session in ScreenCast.sessions:
+            for i in ScreenCast.sessions[o.session].get("Handles", []): Portal.handle_dbus(m="Close", i="Session", path=i)
         if hasattr(o, "capture_session"):
             session = next((i for i in ImageCopy.sessions if i["Session"] == o.capture_session), False)
             if session:
@@ -3389,20 +3405,24 @@ class ImageCopy:
             else: ImageCopy.destroy_object(o.capture_session)
         for i in ("capture_session", "session", "buffer", "serial", "node_id", "pipewire", "source", "prompt", "dmabuf", "data", "width", "height", "stride", "format", "do_ready"):
             if hasattr(o, i): delattr(o, i)
-        if hasattr(o, "destroy"): o.destroy()
 
     @staticmethod
-    def new_frame(proxy, frame):
-        for i in ("buffer", "session", "prompt", "dmabuf", "format", "do_ready"):
-            if hasattr(proxy, i): setattr(frame, i, getattr(proxy, i))
+    def new_frame(proxy, **kwargs):
+        attrs = dict((i, getattr(proxy, i)) for i in ("buffer", "session", "prompt", "dmabuf", "format", "do_ready") if hasattr(proxy, i))
         for i in ("capture_session", "buffer", "session", "prompt"):
             if hasattr(proxy, i): delattr(proxy, i)
+        ImageCopy.destroy_object(proxy)
+        frame = ImageCopy.capture_frame(add_user=False, **kwargs)
+        for k, v in attrs.items(): setattr(frame, k, v)
 
     @staticmethod
     def get_gsr():
         ImageCopy.gsr = "/bin/gpu-screen-recorder"
         if FLATPAK_ID: return exists(Path(ROOT, ImageCopy.gsr))
         return exists(ImageCopy.gsr)
+
+    @staticmethod
+    def get_caps(width, height): return Gst.Caps.from_string(f"video/x-raw,format={ImageCopy.get_default_format()},width={width},height={height},framerate=60/1")
 
 class Palette(Palette, Window):
     def __init__(self):
@@ -4810,7 +4830,7 @@ class ScreenCast(CancellablePrompt):
                 if isinstance(video, Gdk.Monitor):
                     g = video.get_geometry()
                     crop = ImageCopy.get_crop(W=g.width, H=g.height, w=w, h=h, x=x, y=y)
-                    plaunch += f" appsrc emit-signals=false format=time do-timestamp=true is-live=true max-buffers=4 block=false name=Source ! video/x-raw,format={ImageCopy.get_default_format()},width={g.width},height={g.height},framerate=60/1 !{crop} vapostproc ! vah264enc ! h264parse ! queue ! Mux."
+                    plaunch += f" appsrc emit-signals=false format=time do-timestamp=true is-live=true max-buffers=4 block=false name=Source !{crop} vapostproc ! vah264enc ! h264parse ! queue ! Mux."
             if self.audios.get(self.audio_selected, False) != False:
                 audio = self.audios[self.audio_selected]
                 plaunch += " pipewiresrc name=PipeWire do-timestamp=true provide-clock=false ! queue max-size-time=500000000 ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2 ! opusenc bitrate-type=cbr bitrate=128000 frame-size=20 ! queue ! Mux."
@@ -4873,8 +4893,8 @@ class ScreenCast(CancellablePrompt):
             del proxy.prompt
             return
         pipeline = proxy.prompt.pipeline
-        pipeline.source.emit("push-buffer", buffer)
-        ImageCopy.new_frame(proxy, ImageCopy.capture_frame(add_user=False, **pipeline.args))
+        pipeline.source.emit("push-sample", Gst.Sample.new(buffer, ImageCopy.get_caps(proxy.width, proxy.height), None, None))
+        ImageCopy.new_frame(proxy, **pipeline.args)
 
     @staticmethod
     def share_do_ready(proxy, buffer):
@@ -4885,15 +4905,14 @@ class ScreenCast(CancellablePrompt):
         args = ScreenCast.sessions[proxy.session]["Args"]
         if not ScreenCast.sessions[proxy.session].get("Pipeline", False):
             crop = ImageCopy.get_crop(W=proxy.width, H=proxy.height, w=args["w"], h=args["h"], x=args["x"], y=args["y"])
-            p = f"appsrc emit-signals=false format=time do-timestamp=true is-live=true max-buffers=4 block=false name=Source ! video/x-raw,format={ImageCopy.get_default_format()},width={proxy.width},height={proxy.height},framerate=60/1 !{crop} vapostproc ! pipewiresink name=PipeWire client_name=shell-screencast-{proxy.session} mode=2"
+            p = f"appsrc emit-signals=false format=time do-timestamp=true is-live=true max-buffers=4 block=false name=Source !{crop} vapostproc ! pipewiresink name=PipeWire client_name=shell-screencast-{proxy.session} mode=2"
             ScreenCast.sessions[proxy.session]["Pipeline"] = pipeline = Gst.parse_launch(p)
-            pipeline.session = proxy.session
             pipeline.pipewire, pipeline.source = [pipeline.get_by_name(i) for i in ("PipeWire", "Source")]
             pipeline.set_bus(None)
             pipeline.set_properties(async_handling=False, message_forward=False)
             pipeline.set_state(Gst.State.PLAYING)
         pipeline = ScreenCast.sessions[proxy.session]["Pipeline"]
-        pipeline.source.emit("push-buffer", buffer)
+        pipeline.source.emit("push-sample", Gst.Sample.new(buffer, ImageCopy.get_caps(proxy.width, proxy.height), None, None))
         if not hasattr(pipeline, "node_id"):
             try:
                 pipeline.node_id = int(Spawner("wpctl status").output.split(". " + pipeline.pipewire.get_property("client-name"), 1)[0].rsplit(" ", 1)[-1])
@@ -4904,7 +4923,7 @@ class ScreenCast(CancellablePrompt):
                 if ScreenCast.sessions[proxy.session].get("Audio Source", False): pass
                 i.return_value(GLib.Variant("(ua{sv})", (0, { "streams": GLib.Variant("a(ua{sv})", [(pipeline.node_id, {"position": GLib.Variant("(ii)", (0, 0)), "size": GLib.Variant("(ii)", (1000, 1000)), "source_type": GLib.Variant("u", 1)}), ]), "persist_mode": GLib.Variant("u", 0), "pipewire-serial": GLib.Variant("t", pipeline.serial)})))
                 ScreenCast.sessions[proxy.session]["Invocations"].remove(i)
-        ImageCopy.new_frame(proxy, ImageCopy.capture_frame(add_user=False, source=args["source"], cursor=args["cursor"]))
+        ImageCopy.new_frame(proxy, source=args["source"], cursor=args["cursor"])
 
     @staticmethod
     def stream_added(conn, sender, signal, path, iface, params, self): self.invocation.return_value(GLib.Variant("(ua{sv})", (0, { "streams": GLib.Variant("a(ua{sv})", [(params[0], {"size": GLib.Variant("(ii)", (1, 1)), "source_type": GLib.Variant("u", 2)}), ]), "persist_mode": GLib.Variant("u", 0), })))
@@ -5093,7 +5112,7 @@ class Portal:
         if m == "Close":
             for c in (Request, Session):
                 if i.endswith(c.__name__):
-                    inv.return_value(GLib.Variant("()", ()))
+                    if inv: inv.return_value(GLib.Variant("()", ()))
                     o = c.get(path)
                     if o and o["cancel"]: o["cancel"]()
                     c.remove(path)
@@ -5118,9 +5137,10 @@ class Portal:
                         for k in tuple(ScreenCast.sessions.keys()):
                             v = ScreenCast.sessions.get(k, {})
                             if session in v.get("Handles", []): v["Handles"].remove(session)
-                            if not v.get("Handles", False):
+                            if v and not v.get("Handles", False):
                                 p = v.get("Pipeline", False)
                                 if p: ImageCopy.destroy_object(p)
+                                del ScreenCast.sessions[k]
                     cancel = f
             if response == 0: Session.export(session, cancel)
             return inv.return_value(GLib.Variant("(ua{sv})", (response, results)))
