@@ -2474,7 +2474,7 @@ class DesktopApp(ListObject):
 
     table = "Apps"
     properties = ["custom", "id", "name", "hidden", "command", "icon", "mimetypes"]
-    properties_extra = {"ID": "PRIMARY_KEY", "MimeTypes": "TEXT"}
+    properties_extra = {"MimeTypes": "TEXT"}
 
     def __init__(self, path="", data=None, **kwargs):
         super().__init__(**kwargs)
