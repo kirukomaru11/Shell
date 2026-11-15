@@ -346,7 +346,7 @@ try:
     gbm.gbm_bo_get_stride.restype = c_uint32
     gbm.gbm_bo_get_modifier.argtypes = [c_void_p]
     gbm.gbm_bo_get_modifier.restype = c_uint64
-    from gi.repository import GstAllocators
+    from gi.repository import GstAllocators, GstVideo
 except:
     gbm = False
 
@@ -3206,9 +3206,6 @@ class ImageCopy:
             ImageCopy.capture_manager = Wayland.registry.bind(c, *Wayland.interfaces[c.name.decode()])
 
     @staticmethod
-    def get_default_format(): return "RGBx" if hasattr(Wayfire, "connection") and not getattr(ImageCopy, "dmabuf", False) else "BGRx"
-
-    @staticmethod
     def get_crop(W=0, H=0, w=0, h=0, x=-1, y=-1):
         if (x != -1 or y != -1) and w and h:
             crop = f" videocrop left={x} top={y} right={max(0, W - x - w)} bottom={max(0, H - y - h)} !"
@@ -3273,8 +3270,18 @@ class ImageCopy:
         buffer = pool.create_buffer(0, width, height, stride, format)
         buffer.data = Gst.Buffer.new()
         buffer.data.append_memory(memory)
+        if format == 0:
+            format = GstVideo.VideoFormat.BGRA
+        elif format == 1:
+            format = GstVideo.VideoFormat.BGRX
+        else:
+            format = GstVideo.video_dma_drm_fourcc_to_format(format)
+        ImageCopy.add_video_meta(buffer.data, format, width, height, stride)
         pool.destroy()
         return buffer
+
+    @staticmethod
+    def add_video_meta(buffer, format, width, height, stride): GstVideo.buffer_add_video_meta_full(buffer, GstVideo.VideoFrameFlags.NONE, format, width, height, 1, [0, 0, 0, 0], [stride, 0, 0, 0])
 
     @staticmethod
     def device(device=False):
@@ -3302,6 +3309,7 @@ class ImageCopy:
         params.destroy()
         buffer.data = Gst.Buffer.new()
         buffer.data.append_memory(allocator.alloc_with_flags(allocator, fd, stride * height, 0))
+        ImageCopy.add_video_meta(buffer.data, GstVideo.video_dma_drm_fourcc_to_format(format), width, height, stride)
         return buffer
 
     @staticmethod
@@ -3372,6 +3380,8 @@ class ImageCopy:
                 if session:
                     ImageCopy.destroy_object(session["Session"].buffer)
                     del session["Session"].buffer
+                    if hasattr(proxy, "buffer"): del proxy.buffer
+                    if hasattr(proxy, "format"): del proxy.format
                     Task.invoke(ImageCopy.new_frame, proxy, session=session)
                 else: ImageCopy.destroy_object(proxy)
         elif event == "ready":
@@ -3422,7 +3432,10 @@ class ImageCopy:
         return exists(ImageCopy.gsr)
 
     @staticmethod
-    def get_caps(width, height): return Gst.Caps.from_string(f"video/x-raw,format={ImageCopy.get_default_format()},width={width},height={height},framerate=60/1")
+    def get_caps(buffer):
+        meta = GstVideo.buffer_get_video_meta(buffer)
+        caps = Gst.Caps.from_string(f"video/x-raw,format={GstVideo.video_format_to_string(meta.format)},width={meta.width},height={meta.height},framerate=60/1")
+        return caps
 
 class Palette(Palette, Window):
     def __init__(self):
@@ -3490,7 +3503,7 @@ class Palette(Palette, Window):
         c, d = proxy.function_data
         del proxy.function_data
         if c.is_cancelled(): return
-        media = MediaStream(buffer, caps=f"video/x-raw,format={ImageCopy.get_default_format()},width={proxy.width},height={proxy.height},framerate=1/1")
+        media = MediaStream(buffer, caps=ImageCopy.get_caps(buffer))
         media.sig = media.connect("invalidate-contents", Palette.media_changed, (c, d))
 
     def media_changed(media, d):
@@ -3545,7 +3558,7 @@ class Screenshot:
     def do_ready(proxy, buffer):
         d = proxy.function_data
         del proxy.function_data
-        media = MediaStream(buffer, caps=f"video/x-raw,format={ImageCopy.get_default_format()},width={proxy.width},height={proxy.height},framerate=1/1")
+        media = MediaStream(buffer, caps=ImageCopy.get_caps(buffer))
         media.sig = media.connect("invalidate-contents", Screenshot.media_changed, d)
 
     @staticmethod
@@ -4893,7 +4906,7 @@ class ScreenCast(CancellablePrompt):
             del proxy.prompt
             return
         pipeline = proxy.prompt.pipeline
-        pipeline.source.emit("push-sample", Gst.Sample.new(buffer, ImageCopy.get_caps(proxy.width, proxy.height), None, None))
+        pipeline.source.emit("push-sample", Gst.Sample.new(buffer, ImageCopy.get_caps(buffer), None, None))
         ImageCopy.new_frame(proxy, **pipeline.args)
 
     @staticmethod
@@ -4905,14 +4918,14 @@ class ScreenCast(CancellablePrompt):
         args = ScreenCast.sessions[proxy.session]["Args"]
         if not ScreenCast.sessions[proxy.session].get("Pipeline", False):
             crop = ImageCopy.get_crop(W=proxy.width, H=proxy.height, w=args["w"], h=args["h"], x=args["x"], y=args["y"])
-            p = f"appsrc emit-signals=false format=time do-timestamp=true is-live=true max-buffers=4 block=false name=Source !{crop} vapostproc ! pipewiresink name=PipeWire client_name=shell-screencast-{proxy.session} mode=2"
+            p = f"appsrc emit-signals=false format=time do-timestamp=true is-live=true block=false name=Source !{crop} vapostproc ! pipewiresink name=PipeWire client_name=shell-screencast-{proxy.session} mode=2"
             ScreenCast.sessions[proxy.session]["Pipeline"] = pipeline = Gst.parse_launch(p)
             pipeline.pipewire, pipeline.source = [pipeline.get_by_name(i) for i in ("PipeWire", "Source")]
             pipeline.set_bus(None)
             pipeline.set_properties(async_handling=False, message_forward=False)
             pipeline.set_state(Gst.State.PLAYING)
         pipeline = ScreenCast.sessions[proxy.session]["Pipeline"]
-        pipeline.source.emit("push-sample", Gst.Sample.new(buffer, ImageCopy.get_caps(proxy.width, proxy.height), None, None))
+        pipeline.source.emit("push-sample", Gst.Sample.new(buffer, ImageCopy.get_caps(buffer), None, None))
         if not hasattr(pipeline, "node_id"):
             try:
                 pipeline.node_id = int(Spawner("wpctl status").output.split(". " + pipeline.pipewire.get_property("client-name"), 1)[0].rsplit(" ", 1)[-1])
