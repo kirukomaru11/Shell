@@ -3438,15 +3438,12 @@ class ImageCopy:
         return caps
 
 class Palette(Palette, Window):
-    def __init__(self):
+    def __init__(self, color):
         super().__init__(title=self.__class__.__name__)
         self.set_content(Adw.ToolbarView(extend_content_to_top_edge=True, content=Gtk.Box(orientation=Gtk.Orientation.VERTICAL)))
         header = Adw.HeaderBar(show_title=False)
         header.pack_start(Button(icon_name="color-select", css_classes=["flat", "circular"], callback=self.__class__.do))
         self.get_content().add_top_bar(header)
-
-    def start(self, color):
-        self = self or Palette()
         box = self.get_content().get_content()
         while box.get_first_child(): box.remove(box.get_first_child())
         for i in self.adjust_rgb(color):
@@ -3529,7 +3526,7 @@ class Palette(Palette, Window):
             print("Palette:", e)
             return Palette.end(data)
         if isinstance(data, Gio.DBusMethodInvocation): data.return_value(GLib.Variant("(ua{sv})", (0, {"color": GLib.Variant("(ddd)", tuple(i / 255 for i in pixel))})))
-        else: Task.invoke(Palette.start, data, pixel)
+        else: Palette(pixel)
         Task.invoke(cancellable.cancel)
 
     @staticmethod
@@ -3540,18 +3537,18 @@ class Palette(Palette, Window):
 
     @staticmethod
     def do(b=False, data=False, handle=""):
-        if Selector.get_all(): return Palette.end(b.get_root() if b else data)
-        if b: b.get_root().set_visible(False)
+        if b: b.get_root().close()
+        if Selector.get_all(): return Palette.end(data)
         frame = ImageCopy.capture_frame()
-        if not frame: return Palette.end(b.get_root() if b else data, handle=handle)
+        if not frame: return Palette.end(data, handle=handle)
         frame.do_ready = Palette.do_ready
         cancellable = Gio.Cancellable.new()
         if handle:
             def f(): cancellable.cancel()
             Request.export(handle, f)
-        def f(): Palette.end(b.get_root() if b else data, handle=handle)
+        def f(): Palette.end(data, handle=handle)
         cancellable.connect(f)
-        frame.function_data = (cancellable, b.get_root() if b else data)
+        frame.function_data = (cancellable, data)
 
 class Screenshot:
     @staticmethod
