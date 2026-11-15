@@ -4744,7 +4744,7 @@ class ScreenCast(CancellablePrompt):
                     previous = i.split(".", 1)[0].replace("│", "").replace("*", "").strip()
                 if previous: result.append(previous)
                 for _id in result:
-                    r = Spawner(f"wpctl inspect {_id}").output.decode()
+                    r = Spawner(f"wpctl inspect {_id}").output
                     if not "object.serial = \"" in r: continue
                     name = ""
                     for i in ("media.name", "node.description"):
