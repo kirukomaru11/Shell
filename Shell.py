@@ -9,6 +9,7 @@ INFO = {
     "MimeTypes": ["inode/directory", "x-scheme-handler/http", "x-scheme-handler/https", "x-scheme-handler/about", "x-scheme-handler/unknown"]
 }
 
+PORTAL_PATH = "/org/freedesktop/portal/desktop"
 PT_ID = "org.freedesktop.impl.portal"
 PORTAL_DBUS = {
     f"{PT_ID}.Access": {
@@ -136,6 +137,23 @@ PORTAL_DBUS = {
         "methods": {
             "SetWallpaperURI": { "handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "parent_window": { "direction": "in", "type": "s" }, "uri": { "direction": "in", "type": "s" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, },
 }}}
+
+PERMISSION_STORE_DBUS = { f"{PT_ID}.PermissionStore": {
+    "methods": {
+        "Lookup": { "table": { "direction": "in", "type": "s" }, "id": { "direction": "in", "type": "s" }, "permissions": { "direction": "out", "type": "a{sas}"}, "data": { "direction": "out", "type": "v" } , },
+        "Set": { "table": { "direction": "in", "type": "s" }, "create": { "direction": "in", "type": "b" }, "id": { "direction": "in", "type": "s" }, "app_permissions": { "direction": "in", "type": "a{sas}" }, "data": { "direction": "in", "type": "v" }, },
+        "Delete": { "table": { "direction": "in", "type": "s" }, "id": { "direction": "in", "type": "s" }, },
+        "SetValue": { "table": { "direction": "in", "type": "s" }, "create": { "direction": "in", "type": "b" }, "id": { "direction": "in", "type": "s" }, "data": { "direction": "in", "type": "v" }, },
+        "SetPermission": { "table": { "direction": "in", "type": "s" }, "create": { "direction": "in", "type": "b" }, "id": { "direction": "in", "type": "s" }, "app": { "direction": "in", "type": "s" }, "permissions": { "direction": "in", "type": "as" }, },
+        "DeletePermission": { "table": { "direction": "in", "type": "s" }, "id": { "direction": "in", "type": "s" }, "app": { "direction": "in", "type": "s" }},
+        "GetPermission": { "table": { "direction": "in", "type": "s" }, "id": { "direction": "in", "type": "s" }, "app": { "direction": "in", "type": "s" }, "permissions": { "direction": "out", "type": "as" }},
+        "List": { "table": { "direction": "in", "type": "s" }, "ids": { "direction": "out", "type": "as" }, }
+    },
+    "signals": { "Changed": { "table": "s", "id": "s", "deleted": "b", "data": "v", "permissions": "a{sas}" } },
+    "properties": {
+        "version": { "type": "u", "access": "read" }
+    }
+}}
 
 import sys
 
@@ -4627,12 +4645,12 @@ class Settings(Window):
             value = GLib.Variant.new_uint32(1 if v == Adw.ColorScheme.FORCE_DARK else 2 if v == Adw.ColorScheme.FORCE_LIGHT else 0)
         namespace, name = Settings.name_to_portal(name)
         if get: return (namespace, name, value) if namespace else None
-        if name.startswith("disable-"): App.default.get_dbus_connection().emit_signal(None, "/org/freedesktop/portal/desktop", "org.freedesktop.DBus.Properties", "PropertiesChanged", GLib.Variant("(sa{sv}as)", (f"{PT_ID}.Lockdown", {name: value}, tuple())))
+        if name.startswith("disable-"): App.default.get_dbus_connection().emit_signal(None, PORTAL_PATH, "org.freedesktop.DBus.Properties", "PropertiesChanged", GLib.Variant("(sa{sv}as)", (f"{PT_ID}.Lockdown", {name: value}, tuple())))
         if name == "user-avatar":
             if self.user_avatar: PaintableTask(func=self.__class__.avatar_finish_func, uri=self.user_avatar)
             else: self.avatar.set_custom_image(None)
         if namespace == self.APPEARANCE and hasattr(Niri, "connection"): Niri.request("Action", { "DoScreenTransition": {} })
-        if namespace: App.default.get_dbus_connection().emit_signal(None, "/org/freedesktop/portal/desktop", f"{PT_ID}.Settings", "SettingChanged", GLib.Variant("(ssv)", (namespace, name, value)))
+        if namespace: App.default.get_dbus_connection().emit_signal(None, PORTAL_PATH, f"{PT_ID}.Settings", "SettingChanged", GLib.Variant("(ssv)", (namespace, name, value)))
 
 class Authorize(EntryPrompt):
     cookie = GObject.Property(type=str)
@@ -5138,6 +5156,133 @@ class Session:
         session = Session.sessions.pop(handle, None)
         if session: PORTAL_DBUS.bus.unregister_object(session["id"])
 
+class Permission:
+    table_name = GObject.Property(type=str, default="", nick="Table")
+    id = GObject.Property(type=str, default="", nick="ID")
+    app = GObject.Property(type=str, default="")
+    permissions = GObject.Property(type=str, default="")
+    properties = ["table_name", "id", "app", "permissions"]
+    table = "Permissions"
+
+    @staticmethod
+    def get_data(): return App.default.data
+
+    @classmethod
+    def get_permissions(cls, table, id):
+        d = cls.get_data()
+        return {i["App"]: json(i["Permissions"]) for i in d.read(return_dict=True, force_tuple=True, table=cls.table, conditions='"Table" = ? AND "ID" = ?', conds=(table, id))}
+
+    @classmethod
+    def emit_changed(cls, table, id, deleted, data, permissions): PERMISSION_STORE_DBUS.bus.emit_signal(None, DBUS.path(f"{PT_ID}.PermissionStore"), f"{PT_ID}.PermissionStore", "Changed", GLib.Variant("(ssbva{sas})", (table, id, deleted, data, permissions)))
+
+    @classmethod
+    def set_permission(cls, inv, table, create, id, app, permissions):
+        d = cls.get_data()
+        conditions = "\"Table\" = ? AND \"ID\" = ? AND \"App\" = ?"
+        conds = (table, id, app)
+        if not d.exists(table=cls.table, conditions=conditions, conds=conds):
+            if create:
+                v = {"Table": table, "ID": id, "App": app, "Permissions": permissions}
+                d.new(table=cls.table, names=tuple(v.keys()), values=tuple(v.values()))
+            else: return
+        d.update(table=cls.table, conditions=conditions, conds=conds, column="Permissions", value=permissions)
+        permissions = cls.get_permissions(table, id)
+        cls.emit_changed(table, id, False, Resource.get_resource_data(table, id) or GLib.Variant("s", ""), permissions)
+        if inv: inv.return_value(None)
+
+    @classmethod
+    def get_permission(cls, inv, table, id, app):
+        d = cls.get_data()
+        conditions = "\"Table\" = ? AND \"ID\" = ? AND \"App\" = ?"
+        conds = (table, id, app)
+        if d.exists(table=cls.table, conditions=conditions, conds=conds):
+            permissions = json(d.read(table=cls.table, column="Permissions", conditions=conditions, conds=conds))
+        else:
+            permissions = []
+        if inv: inv.return_value(GLib.Variant("(as)", (permissions,)))
+
+    @classmethod
+    def delete_permission(cls, inv, table, id, app):
+        conditions = '"Table" = ? AND "ID" = ? AND "App" = ?'
+        conds = (table, id, app)
+        cls.get_data().delete(table=cls.table, conditions=conditions, conds=conds)
+        data = Resource.get_resource_data(table, id)
+        permissions = cls.get_permissions(table, id)
+        cls.emit_changed(table, id, False, data if data else GLib.Variant("s", ""), permissions)
+        if inv: inv.return_value(None)
+
+class Resource:
+    table_name = GObject.Property(type=str, default="", nick="Table")
+    id = GObject.Property(type=str, default="", nick="ID")
+    data = GObject.Property(type=str, default="")
+    properties = ["table_name", "id", "data"]
+    table = "Resources"
+
+    @staticmethod
+    def serialize(data): return data.print_(True)
+
+    @staticmethod
+    def deserialize(data): return GLib.Variant.parse(None, data)
+
+    @staticmethod
+    def get_data(): return App.default.data
+
+    @classmethod
+    def get_resource_data(cls, table, id):
+        s = cls.get_data().read(table=cls.table, column="Data", conditions='"Table" = ? AND "ID" = ?', conds=(table, id))
+        return cls.deserialize(s) if s else GLib.Variant("s", "")
+
+    @classmethod
+    def lookup(cls, inv, table, id):
+        permissions = Permission.get_permissions(table, id)
+        data = cls.get_resource_data(table, id)
+        if not data and not permissions: return inv.return_dbus_error("org.freedesktop.portal.Error.NotFound", "Resource not found")
+        if inv: inv.return_value(GLib.Variant("(a{sas}v)", (permissions, data if data else GLib.Variant("s", ""))))
+
+    @classmethod
+    def list(cls, inv, table):
+        d = cls.get_data()
+        permissions = d.read(return_dict=True, force_tuple=True, table=Permission.table, column="ID", conditions='"Table" = ?', conds=(table,))
+        resources = d.read(return_dict=True, force_tuple=True, table=cls.table, column="ID", conditions='"Table" = ?', conds=(table,))
+        ids = list(dict.fromkeys([i["ID"] for i in permissions] + [i["ID"] for i in resources]))
+        if inv: inv.return_value(GLib.Variant("(as)", (ids,)))
+
+    @classmethod
+    def set(cls, inv, table, create, id, app_permissions, data):
+        d = cls.get_data()
+        if not create and not d.exists(table=Permission.table, conditions='"Table" = ?', conds=(table,)): return
+        d.delete(table=Permission.table, conditions='"Table" = ? AND "ID" = ?', conds=(table, id))
+        for app, permissions in app_permissions.items(): d.new(table=Permission.table, names=("Table", "ID", "App", "Permissions"), values=(table, id, app, permissions))
+        if not isinstance(data, GLib.Variant):
+            data = get_variant(data)
+        data_s = cls.serialize(data)
+        if d.exists(table=cls.table, conditions='"Table" = ? AND "ID" = ?', conds=(table, id)): d.update(table=cls.table, conditions='"Table" = ? AND "ID" = ?', conds=(table, id), column="Data", value=data_s)
+        else: d.new(table=cls.table, names=("Table", "ID", "Data"), values=(table, id, data_s))
+        Permission.emit_changed(table, id, False, data, app_permissions)
+        if inv: inv.return_value(None)
+
+    @classmethod
+    def set_value(cls, inv, table, create, id, data):
+        d = cls.get_data()
+        if not create and not d.exists(table=cls.table, conditions='"Table" = ?', conds=(table,)): return
+        if not isinstance(data, GLib.Variant):
+            data = get_variant(data)
+        data_s = cls.serialize(data)
+        if d.exists(table=cls.table, conditions='"Table" = ? AND "ID" = ?', conds=(table, id)): d.update(table=cls.table, conditions='"Table" = ? AND "ID" = ?', conds=(table, id), column="Data", value=data_s)
+        else: d.new(table=cls.table, names=("Table", "ID", "Data"), values=(table, id, data_s))
+        Permission.emit_changed(table, id, False, data, Permission.get_permissions(table, id))
+        if inv: inv.return_value(None)
+
+    @classmethod
+    def delete(cls, inv, table, id):
+        d = cls.get_data()
+        permissions = Permission.get_permissions(table, id)
+        data = cls.get_resource_data(table, id)
+        d.delete(table=Permission.table, conditions='"Table" = ? AND "ID" = ?', conds=(table, id))
+        d.delete(table=cls.table, conditions='"Table" = ? AND "ID" = ?', conds=(table, id))
+        Permission.emit_changed(table, id, True, data if data else GLib.Variant("s", ""), permissions)
+        if inv: inv.return_value(None)
+
 class App(App):
     @staticmethod
     def handle_dbus(dbus=None, connection=None, sender=None, path=None, i="", m="", p=None, inv=None):
@@ -5186,6 +5331,19 @@ class App(App):
 class Portal:
     @staticmethod
     def handle_dbus(dbus=None, connection=None, sender=None, path=None, i="", m="", p=None, inv=None):
+        if i.endswith("PermissionStore"):
+            body = inv.get_message().get_body()
+            p = [body.get_child_value(n).unpack() for n in range(body.n_children())]
+            if m in ("Set",): p[4] = body.get_child_value(4).get_variant()
+            if m == "SetValue": p[3] = body.get_child_value(3).get_variant()
+        if m == "Lookup": return Resource.lookup(inv, *p)
+        if m == "List": return Resource.list(inv, *p)
+        if m == "Delete": return Resource.delete(inv, *p)
+        if m == "Set": return Resource.set(inv, *p)
+        if m == "SetValue": return Resource.set_value(inv, *p)
+        if m == "DeletePermission": return Permission.delete_permission(inv, *p)
+        if m == "SetPermission": return Permission.set_permission(inv, *p)
+        if m == "GetPermission": return Permission.get_permission(inv, *p)
         if m == "EnableAutostart": return inv.return_value(get_variant(False))
         if m == "GetAppState": return inv.return_value(GLib.Variant("(a{sv})", ({},)))
         if m == "NotifyBackground":
@@ -5318,7 +5476,7 @@ class Portal:
                 v = 0
                 if p[0].endswith("ScreenCast"):
                     v = 6
-                elif p[0].endswith(("Settings", "Notification")):
+                elif p[0].endswith(("PermissionStore", "Settings", "Notification")):
                     v = 2
                 elif p[0].endswith("Screenshot"):
                     v = 3
@@ -5343,7 +5501,7 @@ register_adapter(dict, json_string)
 register_adapter(list, json_string)
 register_adapter(tuple, json_string)
 
-App(data=(DesktopApp, LastUsed, Vault, DataSetting), info=INFO, activate=nothing, file_open=App.file_open, shutdown=App.shutdown, log=False)
+App(data=(DesktopApp, LastUsed, Vault, Resource, Permission, DataSetting), info=INFO, activate=nothing, file_open=App.file_open, shutdown=App.shutdown, log=False)
 
 VALUE = r"(?:#(?:[0-9A-Fa-f]{6}|[0-9A-Fa-f]{3})|rgb\(\s*\d+(?:\.\d+)?\s*,\s*\d+(?:\.\d+)?\s*,\s*\d+(?:\.\d+)?\s*\)|rgba\(\s*\d+(?:\.\d+)?\s*,\s*\d+(?:\.\d+)?\s*,\s*\d+(?:\.\d+)?\s*,\s*(?:0|1|0?\.\d+)\s*\)|hsl\(\s*\d{1,3}(?:\.\d+)?\s*,\s*\d{1,3}(?:\.\d+)?%\s*,\s*\d{1,3}(?:\.\d+)?%\s*\)|hsla\(\s*\d{1,3}(?:\.\d+)?\s*,\s*\d{1,3}(?:\.\d+)?%\s*,\s*\d{1,3}(?:\.\d+)?%\s*,\s*(?:0|1|0?\.\d+)\s*\))"
 COLOR = Regex(VALUE)
@@ -5478,9 +5636,10 @@ def main():
             Vault.gocryptfs = f
             break
     Settings()
-    global PORTAL_DBUS, SESSION
+    global PORTAL_DBUS, PERMISSION_STORE_DBUS, SESSION
     if Settings.portals:
-        PORTAL_DBUS = DBUS(PORTAL_DBUS, f"{PT_ID}.desktop.Shell", "/org/freedesktop/portal/desktop", Portal.handle_dbus)
+        PORTAL_DBUS = DBUS(PORTAL_DBUS, f"{PT_ID}.desktop.Shell", PORTAL_PATH, Portal.handle_dbus)
+        PERMISSION_STORE_DBUS = DBUS(PERMISSION_STORE_DBUS, f"{PT_ID}.PermissionStore", DBUS.path(f"{PT_ID}.PermissionStore"), Portal.handle_dbus)
         if not FLATPAK_ID:
             try:
                 Install.do_desktop(INFO)
