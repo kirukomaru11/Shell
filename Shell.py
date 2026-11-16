@@ -27,6 +27,14 @@ PORTAL_DBUS = {
             "UpdateChoices": { "handle": { "direction": "in", "type": "o" }, "choices": { "direction": "in", "type": "as" }, },
         }
      },
+    f"{PT_ID}.Background": {
+        "methods": {
+            "GetAppState": { "apps": { "direction": "out", "type": "a{sv}" } , },
+            "NotifyBackground": { "handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "name": { "direction": "in", "type": "s" }, "response": { "direction": "out", "type": "u" }, "results": { "direction": "out", "type": "a{sv}" } },
+            "EnableAutostart": { "app_id": { "direction": "in", "type": "s" }, "enable": { "direction": "in", "type": "b" }, "commandline": { "direction": "in", "type": "as" }, "flags": { "direction": "in", "type": "u" }, "result": { "direction": "out", "type": "b" } },
+        },
+        "signals": { "RunningApplicationsChanged": { } },
+     },
     f"{PT_ID}.DynamicLauncher": {
         "methods": {
             "PrepareInstall": { "handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "parent_window": { "direction": "in", "type": "s" }, "name": { "direction": "in", "type": "s" }, "icon_v": { "direction": "in", "type": "v" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, "results": { "direction": "out", "type": "a{sv}" }, },
@@ -112,6 +120,14 @@ PORTAL_DBUS = {
             "ReadAll": { "namespaces": { "direction": "in", "type": "as" }, "value": { "direction": "out", "type": "a{sa{sv}}" } },
         },
         "signals": { "SettingChanged": { "namespace": "s", "key": "s", "value": "v" } },
+        "properties": {
+            "version": { "type": "u", "access": "read" },
+        }
+     },
+    f"{PT_ID}.Usb": {
+        "methods": {
+            "AcquireDevices": { "handle": { "direction": "in", "type": "o" }, "parent_window": { "direction": "in", "type": "s" }, "app_id": { "direction": "in", "type": "s" }, "devices": { "direction": "in", "type": "a(sa{sv}a{sv})" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, "results": { "direction": "out", "type": "a{sv}" } }
+        },
         "properties": {
             "version": { "type": "u", "access": "read" },
         }
@@ -1863,6 +1879,11 @@ class Notification(ListObject):
                 display = Gio.ThemedIcon.new_from_names(display["themed"])
             elif "bytes" in display:
                 display = Gio.BytesIcon.new(GLib.Bytes.new(display["bytes"]))
+        if app and not display:
+            if app + ".desktop" in DesktopApp.list.get_model():
+                i = DesktopApp.list.get_model()[app + ".desktop"]
+                if not i.display_icon: i.do_display_icon()
+                display = i.display_icon
         super().__init__(app=app, title=title, description=description, display=display)
         self.__class__.list.prepend(self)
         if len(self.__class__.list) > 30: self.__class__.list.remove(31)
@@ -1913,6 +1934,7 @@ class NotificationItem(ListItem):
     @staticmethod
     def do_icon_bind(b, v):
         image = b.get_property("target")
+        if isinstance(v, Gio.File): image.set_from_file(v.get_path())
         if isinstance(v, Gdk.Paintable): image.set_from_paintable(v)
         if isinstance(v, Gio.Icon): image.set_from_gicon(v)
         if isinstance(v, str): image.set_from_icon_name(v)
@@ -5027,6 +5049,51 @@ class PrepareInstallPrompt(CancellablePrompt):
         self.install_icon = self.invocation = None
         self.install_name = ""
 
+class UsbPrompt(CancellablePrompt):
+    invocation = GObject.Property(type=Gio.DBusMethodInvocation)
+    def __init__(self, inv, handle, parent_window, app_id, devices, options):
+        heading = app_id or "Unknown App"
+        heading += " wants access to the following USB devices:"
+        group = Adw.PreferencesGroup()
+        for i in devices:
+            device_id, properties, access = i
+            props = properties.get("properties", {})
+            vendor = props.get("ID_VENDOR_FROM_DATABASE")
+            model = props.get("ID_MODEL_FROM_DATABASE") or props.get("ID_MODEL_ENC")
+            vendor_id = props.get("ID_VENDOR_ID", "0000")
+            model_id = props.get("ID_MODEL_ID", "0000")
+            name = " ".join(filter(None, [vendor, model]))
+            r = LabelRow(title=name or "USB Device", label=f"({vendor_id}:{model_id})")
+            group.add(r)
+        super().__init__(extra_child=group, handle=handle, heading=heading)
+        self.invocation = inv
+        self.present()
+
+    def do(self, r):
+        if not self.invocation: return
+        if r == self.responses[0]: self.invocation.return_value(GLib.Variant("(ua{sv})", (1, {})))
+        else: self.invocation.return_value(GLib.Variant("(ua{sv})", (0, {})))
+
+class BackgroundPrompt(CancellablePrompt):
+    invocation = GObject.Property(type=Gio.DBusMethodInvocation)
+    def __init__(self, inv, handle, app_id, name):
+        icon = None
+        if app_id and app_id + ".desktop" in DesktopApp.list.get_model():
+            i = DesktopApp.list.get_model()[app_id + ".desktop"]
+            app_id = i.name or app_id
+            icon = Gtk.Image(overflow=Gtk.Overflow.HIDDEN, pixel_size=128)
+            i.do_icon(icon)
+        heading = app_id or "Unknown App"
+        heading += " wants to run in the background"
+        super().__init__(prefer_wide_layout=True, extra_child=icon, responses=["deny", "allow", "allow once"], handle=handle, heading=heading)
+        self.invocation = inv
+        self.present()
+
+    def do(self, r):
+        if not self.invocation: return
+        response = self.responses.index(r)
+        self.invocation.return_value(GLib.Variant("(ua{sv})", (0, {"result": get_variant(response)})))
+
 class Request:
     requests = {}
 
@@ -5119,6 +5186,15 @@ class App(App):
 class Portal:
     @staticmethod
     def handle_dbus(dbus=None, connection=None, sender=None, path=None, i="", m="", p=None, inv=None):
+        if m == "EnableAutostart": return inv.return_value(get_variant(False))
+        if m == "GetAppState": return inv.return_value(GLib.Variant("(a{sv})", ({},)))
+        if m == "NotifyBackground":
+            if p[1] == INFO["ID"]: return inv.return_value(GLib.Variant("(ua{sv})", (0, {"result": get_variant(1)})))
+            BackgroundPrompt(inv, *p)
+            return
+        if m == "AcquireDevices":
+            UsbPrompt(inv, *p)
+            return
         if m == "Close":
             for c in (Request, Session):
                 if i.endswith(c.__name__):
@@ -5246,7 +5322,7 @@ class Portal:
                     v = 2
                 elif p[0].endswith("Screenshot"):
                     v = 3
-                elif p[0].endswith("DynamicLauncher"):
+                elif p[0].endswith(("Usb", "DynamicLauncher")):
                     v = 1
             v = GLib.Variant(dbus.interfaces[p[0]]["properties"][p[1]]["type"], v)
             if inv: return inv.return_value(GLib.Variant("(v)", (v,)))
