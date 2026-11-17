@@ -2500,7 +2500,7 @@ class DesktopApp(ListObject):
             try:
                 data["mimetypes"] = json(data["mimetypes"])
             except: pass
-        if not isinstance(data.get("MimeTypes", False), list):
+        if not isinstance(data.get("mimetypes", False), list):
             data["mimetypes"] = []
         default = {}
         if path:
@@ -2592,25 +2592,28 @@ class DesktopApp(ListObject):
     def launch(self, uris=None):
         uris = uris or []
         if Apps.instance and Apps.instance.get_mapped(): Apps.instance.set_visible(False)
-        command = self.command
-        if uris:
-            if "%U" in command:
-                command = command.replace("%U", " ".join(["\"" + i + "\"" for i in uris]))
-            elif "%F" in command:
-                command = command.replace("%F", " ".join(["\"" + Gio.File.new_for_uri(i).get_path() + "\"" for i in uris]))
-            elif "%u" in command:
-                command = command.replace("%u", "\"" + uris[0] + "\"")
-            elif "%f" in command:
-                command = command.replace("%f", "\"" + Gio.File.new_for_uri(uris[0]).get_path() + "\"")
-        else:
-            for i in ("F", "U"):
-                for it in (i, i.lower()):
-                    command = command.replace(f" '%{it}'", "")
-                    command = command.replace(f" \"%{it}\"", "")
-                    command = command.replace(f" %{it}", "")
-        command = command.strip()
+        command = GLib.shell_parse_argv(self.command)
+        if not command[0]: return
+        command = command[1]
+        for n, i in enumerate(command):
+            if uris:
+                if "%U" in i:
+                    command[n] = i.replace("%U", " ".join(uris))
+                elif "%F" in command:
+                    command[n] = i.replace("%F", " ".join([GLib.shell_quote(uri_decode(i)) for i in uris]))
+                elif "%u" in i:
+                    command[n] = i.replace("%u", uris[0])
+                elif "%f" in i:
+                    command[n] = i.replace("%f", uri_decode(uris[0]))
+            else:
+                for it in ("F", "U"):
+                    for ite in (it, it.lower()):
+                        command[n] = i.replace(f" '%{ite}'", "")
+                        command[n] = i.replace(f" \"%{ite}\"", "")
+                        command[n] = i.replace(f" %{ite}", "")
+        command = [i for i in command if i]
         if command:
-            if hasattr(Niri, "connection"): Niri.request("Action", { "SpawnSh": { "command": command } })
+            if hasattr(Niri, "connection"): Niri.request("Action", { "Spawn": { "command": command } })
             else: Spawner(command, detach=True)
 
     def do_display_icon(self):
