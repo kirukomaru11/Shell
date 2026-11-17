@@ -205,83 +205,6 @@ except ModuleNotFoundError:
         print("No Utils")
         sys.exit()
 
-class Spawner:
-    def __init__(self, command, read_func=None, pty=False, detach=False):
-        read_func = read_func or self.__class__.read_all
-        if isinstance(command, str):
-            command = GLib.shell_parse_argv(command)[-1]
-        if FLATPAK_ID:
-            command[0] = command[0].split(ROOT, 1)[-1]
-            if pty:
-                command = ["flatpak-spawn", "--host", "script", "-q", "-c", " ".join(command), "/dev/null"]
-            else:
-                command = ["flatpak-spawn", "--host"] + command
-        if detach:
-            self.pid = fork()
-            if self.pid == 0:
-                setsid()
-                fd = os_open(devnull, O_RDONLY)
-                dup2(fd, 0)
-                close(fd)
-                fd = os_open(devnull, O_WRONLY)
-                dup2(fd, 1)
-                dup2(fd, 2)
-                close(fd)
-                execvp(command[0], command)
-            return
-        if pty:
-            self.pid, read_fd = pty_fork()
-            self.input_fd = read_fd
-            if self.pid == 0: execvp(command[0], command)
-        else:
-            stdin_r, stdin_w = pipe()
-            stdout_r, stdout_w = pipe()
-            self.pid = fork()
-            if self.pid == 0:
-                close(stdin_w)
-                close(stdout_r)
-                dup2(stdin_r, 0)
-                dup2(stdout_w, 1)
-                dup2(stdout_w, 2)
-                close(stdin_r)
-                close(stdout_w)
-                execvp(command[0], command)
-            close(stdin_r)
-            close(stdout_w)
-            read_fd = stdout_r
-            self.input_fd = stdin_w
-        while True:
-            ready, _, _ = select([read_fd], [], [], 0.2)
-            if ready:
-                try:
-                    data = read(read_fd, 4096)
-                except Exception as e:
-                    data = None
-                if not data: break
-                text = data.decode()
-                if read_func:
-                    r = read_func(self, text)
-                    if r: break
-                elif hasattr(self, "read"):
-                    r = self.read(text)
-                    if r: break
-                else: break
-            finished, status = waitpid(self.pid, WNOHANG)
-            if finished: break
-        close(read_fd)
-        if not pty: close(self.input_fd)
-        self.input_fd = None
-
-    def read_all(self, text):
-        if not hasattr(self, "output"):
-            self.output = ""
-        self.output += text
-
-    def write(self, t=""):
-        if isinstance(t, str):
-            t = t.encode()
-        write(self.input_fd, t + b"\n")
-
 from io import FileIO
 from re import compile as Regex
 from pty import fork as pty_fork
@@ -290,11 +213,55 @@ from json import loads as json, dumps as json_string
 from string import ascii_lowercase, ascii_uppercase
 from select import select
 from fnmatch import fnmatch
+from subprocess import Popen, PIPE, DEVNULL
 from fcntl import ioctl
 from sqlite3 import register_adapter
 from types import MethodType
 from colorsys import hls_to_rgb, rgb_to_hls
 from math import pi
+
+class Spawner:
+    def __init__(self, command, read_func=None, pty=False, detach=False):
+        read_func = read_func or self.__class__.read_all
+        if isinstance(command, str): command = GLib.shell_parse_argv(command)[-1]
+        if FLATPAK_ID:
+            command[0] = command[0].split(ROOT, 1)[-1]
+            command = ["flatpak-spawn", "--host", "script", "-q", "-c", " ".join(command), "/dev/null"] if pty else ["flatpak-spawn", "--host"] + command
+        if detach:
+            self.pid = Popen(command, stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL, start_new_session=True).pid
+            return
+        if pty:
+            self.pid, read_fd = pty_fork()
+            self.input_fd = read_fd
+            if self.pid == 0: execvp(command[0], command)
+        else:
+            self.process = Popen(command, stdin=PIPE, stdout=PIPE, stderr=PIPE)
+            self.pid = self.process.pid
+            self.input_fd = self.process.stdin.fileno()
+            read_fd = self.process.stdout.fileno()
+        while True:
+            ready, _, _ = select([read_fd], [], [], 0.2)
+            if ready:
+                try: data = read(read_fd, 4096)
+                except OSError: break
+                if not data: break
+                if read_func and read_func(self, data.decode()): break
+                elif hasattr(self, "read") and self.read(data.decode()): break
+                else: break
+            if not pty and self.process.poll() is not None: break
+        if pty: close(read_fd)
+        else:
+            self.process.stdout.close()
+            self.process.stdin.close()
+        self.input_fd = None
+
+    def read_all(self, text):
+        if not hasattr(self, "output"): self.output = ""
+        self.output += text
+
+    def write(self, t=""):
+        if isinstance(t, str): t = t.encode()
+        write(self.input_fd, t + b"\n")
 
 if layer_shell:
     try:
