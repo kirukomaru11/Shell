@@ -80,6 +80,12 @@ PORTAL_DBUS = {
             "SupportedOptions": { "type": "a{sv}", "access": "read" },
         }
     },
+    f"{PT_ID}.Print": {
+        "methods": {
+            "PreparePrint": { "handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "parent_window": { "direction": "in", "type": "s" }, "title": { "direction": "in", "type": "s" }, "settings": { "direction": "in", "type": "a{sv}" }, "page_setup": { "direction": "in", "type": "a{sv}" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, "results": { "direction": "out", "type": "a{sv}" } },
+            "Print": { "handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "parent_window": { "direction": "in", "type": "s" }, "title": { "direction": "in", "type": "s" }, "fd": { "direction": "in", "type": "h" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, "results": { "direction": "out", "type": "a{sv}" } },
+        },
+    },
     f"{PT_ID}.Request": {
         "methods": {
             "Close": {},
@@ -155,6 +161,8 @@ PERMISSION_STORE_DBUS = { f"{PT_ID}.PermissionStore": {
     }
 }}
 
+PORTAL_DBUS.update(PERMISSION_STORE_DBUS)
+
 import sys
 
 def install_portal():
@@ -175,7 +183,7 @@ if sys.argv and sys.argv[-1] == "--install-portal":
     sys.exit()
 
 from os import SEEK_SET, O_WRONLY, O_NONBLOCK, O_RDWR, O_CLOEXEC, O_RDONLY, WNOHANG
-from os import open as os_open, devnull, fork, setsid, dup2, set_blocking, pipe, read, write, lseek, close, execvp, waitpid
+from os import open as os_open, fdopen, devnull, fork, setsid, dup2, set_blocking, pipe, read, write, lseek, close, execvp, waitpid
 
 from struct import pack
 from ctypes import *
@@ -2517,43 +2525,48 @@ class DesktopApp(ListObject):
     properties_extra = {"MimeTypes": "TEXT"}
 
     def __init__(self, path="", data=None, **kwargs):
-        super().__init__(**kwargs)
-        self.default = {}
+        if not data:
+            data = {}
+        data = dict((k.lower(), v) for k, v in data.items())
+        data.update(dict((k.lower(), v) for k, v in kwargs.items()))
+        if isinstance(data.get("mimetypes", False), str):
+            try:
+                data["mimetypes"] = json(data["mimetypes"])
+            except: pass
+        if not isinstance(data.get("MimeTypes", False), list):
+            data["mimetypes"] = []
+        default = {}
         if path:
-            self.id = basename(path)
+            data["id"] = basename(path)
             keyfile = GLib.KeyFile()
             keyfile.load_from_file(path, GLib.KeyFileFlags.NONE)
             try:
                 v = keyfile.get_value("Desktop Entry", "Icon")
             except:
                 v = None
-            self.default["icon"] = self.icon = v
+            default["icon"] = v
             try:
                 v = keyfile.get_value("Desktop Entry", "Name")
             except:
                 v = ""
-            self.default["name"] = self.name = v or self.id.rsplit(".desktop", 1)[0]
+            default["name"] = v or data["id"].rsplit(".desktop", 1)[0]
             try:
                 v = keyfile.get_value("Desktop Entry", "Exec")
             except:
                 v = ""
-            self.default["command"] = self.command = v
+            default["command"] = v
             try:
                 v = keyfile.get_value("Desktop Entry", "MimeType").strip(";").split(";")
             except:
                 v = []
-            self.default["mimetypes"] = self.mimetypes = v
-        if not self.name:
-            self.name = f"Custom App {self.id}"
-        if data:
-            for k, v in data.items():
-                if k == "MimeTypes" and isinstance(v, str):
-                    try:
-                        v = json(v)
-                    except:
-                        v = []
-                    v = v if isinstance(v, list) else []
-                if getattr(self, k.lower(), None) != v and v: setattr(self, k.lower(), v)
+            default["mimetypes"] = v
+            for k, v in default.items():
+                data.setdefault(k, v)
+                if not data[k]:
+                    data[k] = v
+        if not data.get("name", ""):
+            data["name"] = f"Custom App {data['id']}"
+        super().__init__(path=path, default=default, **data)
 
     @staticmethod
     def changed(self, p):
@@ -2624,8 +2637,10 @@ class DesktopApp(ListObject):
                 command = command.replace("%f", "\"" + Gio.File.new_for_uri(uris[0]).get_path() + "\"")
         else:
             for i in ("F", "U"):
-                command = command.replace(f" %{i}", "")
-                command = command.replace(f" %{i.lower()}", "")
+                for it in (i, i.lower()):
+                    command = command.replace(f" '%{it}'", "")
+                    command = command.replace(f" \"%{it}\"", "")
+                    command = command.replace(f" %{it}", "")
         command = command.strip()
         if command:
             if hasattr(Niri, "connection"): Niri.request("Action", { "SpawnSh": { "command": command } })
@@ -4326,7 +4341,7 @@ class Settings(Window):
             },
         "Controllers": {},
         "Vaults": {},
-        "Desktop Portal": {
+        "Portal": {
             "Lockdown": ["disable_printing", "disable_save_to_disk", "disable_application_handlers", "disable_location", "disable_camera", "disable_microphone", "disable_sound_output"]
         },
         "Advanced": {
@@ -4389,7 +4404,7 @@ class Settings(Window):
                 p = GroupsPage()
             toolbar.set_content(p)
             stack.add_titled(toolbar, page, page)
-            if page == "Desktop Portal":
+            if page == "Portal":
                 s = Gtk.Switch()
                 self.bind_property("portals", s, "active", SYNC_BIND)
                 header.pack_end(s)
@@ -4482,6 +4497,10 @@ class Settings(Window):
                     r.set_title(title)
                     p.add(r)
                     self.connect(f"notify::{i.replace('_', '-')}", self.__class__.do_changed)
+            if page == "Portal":
+                g = Adw.PreferencesGroup()
+                g.add(Button(t=Adw.ButtonRow, title="Clear Stored Permissions", callback=Permission.clear))
+                p.add(g)
         stack.bind_property("visible-child-name", view.get_content(), "title", DEFAULT_BIND)
 
         self.__class__.instance = self
@@ -5164,6 +5183,16 @@ class Permission:
     properties = ["table_name", "id", "app", "permissions"]
     table = "Permissions"
 
+    @classmethod
+    def clear(cls, *_):
+        d = cls.get_data()
+        resources = d.read(return_dict=True, force_tuple=True, table=Resource.table)
+        permissions = d.read(return_dict=True, force_tuple=True, table=cls.table)
+        ids = set((i["Table"], i["ID"]) for i in resources + permissions)
+        for table, id in ids: cls.emit_changed(table, id, True, Resource.get_resource_data(table, id) or GLib.Variant("s", ""), cls.get_permissions(table, id))
+        d.table_clear(table=cls.table)
+        d.table_clear(table=Resource.table)
+
     @staticmethod
     def get_data(): return App.default.data
 
@@ -5222,7 +5251,9 @@ class Resource:
     def serialize(data): return data.print_(True)
 
     @staticmethod
-    def deserialize(data): return GLib.Variant.parse(None, data)
+    def deserialize(data):
+        try: return GLib.Variant.parse(None, data)
+        except: return get_variant("")
 
     @staticmethod
     def get_data(): return App.default.data
@@ -5283,6 +5314,81 @@ class Resource:
         Permission.emit_changed(table, id, True, data if data else GLib.Variant("s", ""), permissions)
         if inv: inv.return_value(None)
 
+class Print:
+    tokens = {}
+    next_token = 1
+
+    @staticmethod
+    def finish(inv, handle, response, results=None):
+        Request.remove(handle)
+        if inv: inv.return_value(GLib.Variant("(ua{sv})", (response, results or {})))
+
+    @staticmethod
+    def prepare(inv, handle, app_id, parent_window, title, settings, page_setup, options):
+        cancellable = Gio.Cancellable.new()
+        Request.export(handle, cancellable.cancel)
+        dialog = Gtk.PrintDialog.new()
+        dialog.set_title(title or "Print")
+        dialog.set_modal(options.get("modal", True))
+        if options.get("accept_label"): dialog.set_accept_label(options["accept_label"].replace("_", ""))
+        try:
+            if settings: dialog.set_print_settings(Gtk.PrintSettings.new_from_gvariant(GLib.Variant("a{sv}", settings)))
+            if page_setup: dialog.set_page_setup(Gtk.PageSetup.new_from_gvariant(GLib.Variant("a{sv}", page_setup)))
+        except Exception as e:
+            print("Print:", e)
+        def done(dialog, result, data):
+            try:
+                setup = dialog.setup_finish(result)
+                token = Print.next_token
+                Print.next_token += 1
+                Print.tokens[token] = (app_id, setup)
+                results = {"settings": setup.get_print_settings().to_gvariant(), "page-setup": setup.get_page_setup().to_gvariant(), "token": GLib.Variant("u", token)}
+                Print.finish(inv, handle, 0, results)
+            except GLib.Error:
+                Print.finish(inv, handle, 1)
+        dialog.setup(None, cancellable, done, None)
+
+    @staticmethod
+    def print_file(inv, handle, app_id, parent_window, title, fd_index, options):
+        fd_list = inv.get_message().get_unix_fd_list()
+        fd = fd_list.get(fd_index)
+        token = options.get("token")
+        saved = Print.tokens.get(token) if token else None
+        if saved and saved[0] != app_id: saved = None
+        if token and not saved:
+            close(fd)
+            return Print.finish(inv, handle, 2)
+        cancellable = Gio.Cancellable.new()
+        Request.export(handle, cancellable.cancel)
+        file, iostream = Gio.File.new_tmp("shell-print-XXXXXX")
+        temp_path = file.get_path()
+        stream = iostream.get_output_stream()
+        try:
+            with fdopen(fd, "rb") as source:
+                while chunk := source.read(65536): stream.write_all(chunk)
+            stream.close(None)
+            iostream.close(None)
+        except Exception as e:
+            iostream.close(None)
+            file.delete(None)
+            print("Print:", e)
+            return Print.finish(inv, handle, 2)
+        dialog = Gtk.PrintDialog.new()
+        dialog.set_title(title or "Print")
+        dialog.set_modal(options.get("modal", True))
+        file = Gio.File.new_for_path(temp_path)
+        setup = saved[1] if saved else None
+        def done(dialog, result, data):
+            try:
+                dialog.print_file_finish(result)
+                Print.finish(inv, handle, 0)
+            except GLib.Error:
+                Print.finish(inv, handle, 1)
+            finally:
+                file.delete(None)
+                if token: Print.tokens.pop(token, None)
+        dialog.print_file(None, setup, file, cancellable, done, None)
+
 class App(App):
     @staticmethod
     def handle_dbus(dbus=None, connection=None, sender=None, path=None, i="", m="", p=None, inv=None):
@@ -5331,6 +5437,8 @@ class App(App):
 class Portal:
     @staticmethod
     def handle_dbus(dbus=None, connection=None, sender=None, path=None, i="", m="", p=None, inv=None):
+        if m == "PreparePrint": return Print.prepare(inv, *p)
+        if m == "Print": return Print.print_file(inv, *p)
         if i.endswith("PermissionStore"):
             body = inv.get_message().get_body()
             p = [body.get_child_value(n).unpack() for n in range(body.n_children())]
