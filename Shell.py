@@ -2616,9 +2616,8 @@ class DesktopApp(ListObject):
             else:
                 for it in ("F", "U"):
                     for ite in (it, it.lower()):
-                        command[n] = i.replace(f" '%{ite}'", "")
-                        command[n] = i.replace(f" \"%{ite}\"", "")
-                        command[n] = i.replace(f" %{ite}", "")
+                        for item in ("", "\"", "'"):
+                            command[n] = command[n].replace(f"{item}%{ite}{item}", "").strip()
         command = [i for i in command if i]
         if command:
             if hasattr(Niri, "connection"): Niri.request("Action", { "Spawn": { "command": command } })
