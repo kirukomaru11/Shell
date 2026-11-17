@@ -58,6 +58,14 @@ PORTAL_DBUS = {
             "SaveFiles": { "handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "parent_window": { "direction": "in", "type": "s" }, "title": { "direction": "in", "type": "s" }, "options": { "direction": "in", "type": "a{sv}" }, "response": { "direction": "out", "type": "u" }, "results": { "direction": "out", "type": "a{sv}" }, }
         }
      },
+    f"{PT_ID}.Inhibit": {
+        "methods": {
+            "Inhibit": { "handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "window": { "direction": "in", "type": "s" }, "flags": { "direction": "in", "type": "u" }, "options": { "direction": "in", "type": "a{sv}" } },
+            "CreateMonitor": { "handle": { "direction": "in", "type": "o" }, "session_handle": { "direction": "in", "type": "o" }, "app_id": { "direction": "in", "type": "s" }, "window": { "direction": "in", "type": "s" }, "response": { "direction": "out", "type": "u" } },
+            "QueryEndResponse": { "session_handle": { "direction": "in", "type": "o" } }
+        },
+        "signals": { "StateChanged": { "session_handle": "o", "state": "a{sv}" } }
+    },
     f"{PT_ID}.Lockdown": {
         "properties": {
             "disable-printing": { "type": "b", "access": "readwrite" },
@@ -5407,6 +5415,28 @@ class App(App):
 class Portal:
     @staticmethod
     def handle_dbus(dbus=None, connection=None, sender=None, path=None, i="", m="", p=None, inv=None):
+        if m == "Inhibit":
+            handle, app_id, window, flags, options = p
+            reason = options.get("reason", "Application request")
+            reason = reason.unpack() if isinstance(reason, GLib.Variant) else reason
+            what = [name for flag, name in ((4, "sleep"), (8, "idle")) if flags & flag]
+            if flags & 3: return inv.return_dbus_error("org.freedesktop.DBus.Error.NotSupported", "Logout and user switching inhibition are not supported")
+            fd = None
+            try:
+                if what:
+                    bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+                    proxy = Gio.DBusProxy.new_sync(bus, Gio.DBusProxyFlags.NONE, None, "org.freedesktop.login1", "/org/freedesktop/login1", "org.freedesktop.login1.Manager", None)
+                    reply, fd_list = proxy.call_with_unix_fd_list_sync("Inhibit", GLib.Variant("(ssss)", (" ".join(what), app_id or "Unknown application", reason, "block")), Gio.DBusCallFlags.NONE, 5000, None, None)
+                    fd = fd_list.get(reply.unpack()[0])
+                def f():
+                    if fd != None: close(fd)
+                Request.export(handle, f)
+                return inv.return_value(None)
+            except Exception as e:
+                if fd is not None: close(fd)
+                return inv.return_dbus_error("org.freedesktop.DBus.Error.Failed", str(e))
+        if m == "CreateMonitor": return inv.return_value(GLib.Variant("(u)", (1,)))
+        if m == "QueryEndResponse": return inv.return_value(None)
         if m == "PreparePrint": return Print.prepare(inv, *p)
         if m == "Print": return Print.print_file(inv, *p)
         if i.endswith("PermissionStore"):
