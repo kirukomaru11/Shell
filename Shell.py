@@ -3602,7 +3602,7 @@ class Screenshot:
             Task.invoke(s.overlay.set_child, Gtk.Picture(paintable=paintable))
             s.cancellable = d[0]
             d[0].connect(s.close)
-        else: Task.invoke(Screenshot.finish, True, (data, paintable))
+        else: Task.invoke(Screenshot.finish, True, (cancellable, data, paintable))
         Task.invoke(media.do_dispose)
 
     @staticmethod
