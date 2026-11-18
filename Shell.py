@@ -998,13 +998,13 @@ class Controller(GObject.Object):
         elif not self.emulate_xbox_gamepad:
             self.grabbed = False
 
-    def __init__(self, device, info, t):
+    def __init__(self, device, addr, t):
         self.sent_battery_notification = False
         self.comboed = set()
         super().__init__()
         self.device = device
         self.type = t
-        self.addr = info.split("HID_UNIQ=", 1)[-1].split("\n", 1)[0].upper()
+        self.addr = addr
         if Controller.list[self.addr]: return
         if self.type == "bluetooth":
             self.report_size = 78
@@ -1415,8 +1415,8 @@ class ControllerItem(ListItem):
     @staticmethod
     def battery_icon_bind(b, v):
         v = "full" if v == 10 else ("level-" + str(v) + "0")
-        if b.get_source().charging:
-            v += "-plugged-in" if b.get_source().type == "usb" else f"-charg{'ed' if v == 'full' else 'ing'}"
+        if b.get_property("source").charging:
+            v += "-plugged-in" if b.get_property("source").type == "usb" else f"-charg{'ed' if v == 'full' else 'ing'}"
         v = "battery-" + v.replace("full-plugged", "level-100-plugged") + "-symbolic"
         return v
 
@@ -4499,10 +4499,14 @@ class Settings(Window):
 
     @staticmethod
     def try_hidraw(device):
-        info = Spawner(f"udevadm info -t -q all -n {device}").output
+        d = device.split("/dev/", 1)[-1]
+        try:
+            info = get_contents(f"/sys/class/hidraw/{d}/device/uevent").decode()
+        except: return
         name = info.split("HID_NAME=", 1)[-1].split("\n", 1)[0]
-        if name in ("Wireless Controller",): Controller(device, info, "bluetooth")
-        elif name in ("Sony Computer Entertainment Wireless Controller", "Sony Interactive Entertainment Wireless Controller"): Controller(device, info, "usb")
+        addr = info.split("HID_UNIQ=", 1)[-1].split("\n", 1)[0].upper()
+        if name in ("Wireless Controller",): Controller(device, addr, "bluetooth")
+        elif name in ("Sony Computer Entertainment Wireless Controller", "Sony Interactive Entertainment Wireless Controller"): Controller(device, addr, "usb")
 
     @staticmethod
     def dev_changed(m, f, fo, t):
