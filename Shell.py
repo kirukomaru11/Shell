@@ -229,10 +229,10 @@ from colorsys import hls_to_rgb, rgb_to_hls
 from math import pi
 
 class Spawner:
-    def __init__(self, command, read_func=None, pty=False, detach=False):
+    def __init__(self, command, read_func=None, pty=False, detach=False, host=True):
         read_func = read_func or self.__class__.read_all
         if isinstance(command, str): command = GLib.shell_parse_argv(command)[-1]
-        if FLATPAK_ID:
+        if FLATPAK_ID and host:
             command[0] = command[0].split(ROOT, 1)[-1]
             command = ["flatpak-spawn", "--host", "script", "-q", "-c", " ".join(command), "/dev/null"] if pty else ["flatpak-spawn", "--host"] + command
         if detach:
@@ -250,13 +250,20 @@ class Spawner:
         while True:
             ready, _, _ = select([read_fd], [], [], 0.2)
             if ready:
-                try: data = read(read_fd, 4096)
-                except OSError: break
-                if not data: break
-                if read_func and read_func(self, data.decode()): break
-                elif hasattr(self, "read") and self.read(data.decode()): break
-                else: break
-            if not pty and self.process.poll() is not None: break
+                try:
+                    data = read(read_fd, 4096)
+                except OSError:
+                    break
+                if not data:
+                    break
+                if read_func:
+                    if read_func(self, data.decode()):
+                        break
+                elif hasattr(self, "read"):
+                    if self.read(data.decode()):
+                        break
+            if not pty and self.process.poll() is not None:
+                break
         if pty: close(read_fd)
         else:
             self.process.stdout.close()
@@ -264,8 +271,10 @@ class Spawner:
         self.input_fd = None
 
     def read_all(self, text):
-        if not hasattr(self, "output"): self.output = ""
+        if not hasattr(self, "output"):
+            self.output = ""
         self.output += text
+        return False
 
     def write(self, t=""):
         if isinstance(t, str): t = t.encode()
@@ -1421,31 +1430,91 @@ class ControllerItem(ListItem):
         return v
 
 class EventCodes:
-    @staticmethod
-    def get():
-        if getattr(EventCodes, "codes", False): return
-        EventCodes.codes = {}
-        try:
-            p = "/usr/include/linux/input-event-codes.h"
-            if FLATPAK_ID:
-                p = Path(ROOT, p)
-            codes = get_contents(p).decode()
-            for line in codes.split("\n"):
-                if not (line and line.startswith("#define")): continue
-                line = line.split("#define", 1)[-1].split("/*", 1)[0].strip(" \t").replace(" + ", "+")
-                line = " ".join([i.strip(" \t") for i in line.split("\t") if i.strip(" \t")])
-                line = [i.strip(" \t") for i in line.split(" ") if i.strip(" \t")]
-                if len(line) != 2: continue
-                name, value = line
-                try:
-                    if value.startswith("0x"):
-                        value = int(value, 0)
-                    else:
-                        value = int(value)
-                except:
-                    value = eval(value, EventCodes.codes, EventCodes.codes)
-                EventCodes.codes[name] = int(value)
-        except Exception as e: print("Couldn't get event codes", e)
+    codes = {}
+
+    @classmethod
+    def add(cls, start, names): cls.codes.update({name: start + i for i, name in enumerate(names.split())})
+
+    @classmethod
+    def values(cls, **kwargs):  cls.codes.update(kwargs)
+
+    @classmethod
+    def sequence(cls, prefix, start, count, offset=1): cls.codes.update({f"{prefix}{i + offset}": start + i for i in range(count)})
+
+    @classmethod
+    def aliases(cls, **kwargs): cls.codes.update({alias: cls.codes[target] for alias, target in kwargs.items()})
+
+    @classmethod
+    def limits(cls, prefix, maximum): cls.values(**{f"{prefix}_MAX": maximum, f"{prefix}_CNT": maximum + 1})
+
+    @classmethod
+    def build(cls):
+        cls.add(0, "INPUT_PROP_POINTER INPUT_PROP_DIRECT INPUT_PROP_BUTTONPAD INPUT_PROP_SEMI_MT INPUT_PROP_TOPBUTTONPAD INPUT_PROP_POINTING_STICK INPUT_PROP_ACCELEROMETER INPUT_PROP_PRESSUREPAD")
+        cls.limits("INPUT_PROP", 0x1f)
+        cls.values(EV_SYN=0, EV_KEY=1, EV_REL=2, EV_ABS=3, EV_MSC=4, EV_SW=5, EV_LED=0x11, EV_SND=0x12, EV_REP=0x14, EV_FF=0x15, EV_PWR=0x16, EV_FF_STATUS=0x17)
+        cls.limits("EV", 0x1f)
+        cls.add(0, "SYN_REPORT SYN_CONFIG SYN_MT_REPORT SYN_DROPPED")
+        cls.limits("SYN", 0xf)
+        cls.add(0, "KEY_RESERVED")
+        cls.add(1, "KEY_ESC KEY_1 KEY_2 KEY_3 KEY_4 KEY_5 KEY_6 KEY_7 KEY_8 KEY_9 KEY_0 KEY_MINUS KEY_EQUAL KEY_BACKSPACE KEY_TAB KEY_Q KEY_W KEY_E KEY_R KEY_T KEY_Y KEY_U KEY_I KEY_O KEY_P KEY_LEFTBRACE KEY_RIGHTBRACE KEY_ENTER KEY_LEFTCTRL KEY_A KEY_S KEY_D KEY_F KEY_G KEY_H KEY_J KEY_K KEY_L KEY_SEMICOLON KEY_APOSTROPHE KEY_GRAVE KEY_LEFTSHIFT KEY_BACKSLASH KEY_Z KEY_X KEY_C KEY_V KEY_B KEY_N KEY_M KEY_COMMA KEY_DOT KEY_SLASH KEY_RIGHTSHIFT KEY_KPASTERISK KEY_LEFTALT KEY_SPACE KEY_CAPSLOCK")
+        cls.sequence("KEY_F", 59, 10)
+        cls.add(69, "KEY_NUMLOCK KEY_SCROLLLOCK KEY_KP7 KEY_KP8 KEY_KP9 KEY_KPMINUS KEY_KP4 KEY_KP5 KEY_KP6 KEY_KPPLUS KEY_KP1 KEY_KP2 KEY_KP3 KEY_KP0 KEY_KPDOT")
+        cls.add(85, "KEY_ZENKAKUHANKAKU KEY_102ND KEY_F11 KEY_F12 KEY_RO KEY_KATAKANA KEY_HIRAGANA KEY_HENKAN KEY_KATAKANAHIRAGANA KEY_MUHENKAN KEY_KPJPCOMMA KEY_KPENTER KEY_RIGHTCTRL KEY_KPSLASH KEY_SYSRQ KEY_RIGHTALT KEY_LINEFEED KEY_HOME KEY_UP KEY_PAGEUP KEY_LEFT KEY_RIGHT KEY_END KEY_DOWN KEY_PAGEDOWN KEY_INSERT KEY_DELETE KEY_MACRO KEY_MUTE KEY_VOLUMEDOWN KEY_VOLUMEUP KEY_POWER KEY_KPEQUAL KEY_KPPLUSMINUS KEY_PAUSE KEY_SCALE")
+        cls.add(121, "KEY_KPCOMMA KEY_HANGEUL KEY_HANJA KEY_YEN KEY_LEFTMETA KEY_RIGHTMETA KEY_COMPOSE")
+        cls.add(128, "KEY_STOP KEY_AGAIN KEY_PROPS KEY_UNDO KEY_FRONT KEY_COPY KEY_OPEN KEY_PASTE KEY_FIND KEY_CUT KEY_HELP KEY_MENU KEY_CALC KEY_SETUP KEY_SLEEP KEY_WAKEUP KEY_FILE KEY_SENDFILE KEY_DELETEFILE KEY_XFER KEY_PROG1 KEY_PROG2 KEY_WWW KEY_MSDOS KEY_COFFEE KEY_ROTATE_DISPLAY KEY_CYCLEWINDOWS KEY_MAIL KEY_BOOKMARKS KEY_COMPUTER KEY_BACK KEY_FORWARD KEY_CLOSECD KEY_EJECTCD KEY_EJECTCLOSECD KEY_NEXTSONG KEY_PLAYPAUSE KEY_PREVIOUSSONG KEY_STOPCD KEY_RECORD KEY_REWIND KEY_PHONE KEY_ISO KEY_CONFIG KEY_HOMEPAGE KEY_REFRESH KEY_EXIT KEY_MOVE KEY_EDIT KEY_SCROLLUP KEY_SCROLLDOWN KEY_KPLEFTPAREN KEY_KPRIGHTPAREN KEY_NEW KEY_REDO")
+        cls.sequence("KEY_F", 183, 12, 13)
+        cls.values(**dict(zip("KEY_PLAYCD KEY_PAUSECD KEY_PROG3 KEY_PROG4 KEY_ALL_APPLICATIONS KEY_SUSPEND KEY_CLOSE KEY_PLAY KEY_FASTFORWARD KEY_BASSBOOST KEY_PRINT KEY_HP KEY_CAMERA KEY_SOUND KEY_QUESTION KEY_EMAIL KEY_CHAT KEY_SEARCH KEY_CONNECT KEY_FINANCE KEY_SPORT KEY_SHOP KEY_ALTERASE KEY_CANCEL KEY_BRIGHTNESSDOWN KEY_BRIGHTNESSUP KEY_MEDIA KEY_SWITCHVIDEOMODE KEY_KBDILLUMTOGGLE KEY_KBDILLUMDOWN KEY_KBDILLUMUP KEY_SEND KEY_REPLY KEY_FORWARDMAIL KEY_SAVE KEY_DOCUMENTS KEY_BATTERY KEY_BLUETOOTH KEY_WLAN KEY_UWB KEY_UNKNOWN KEY_VIDEO_NEXT KEY_VIDEO_PREV KEY_BRIGHTNESS_CYCLE KEY_BRIGHTNESS_AUTO KEY_DISPLAY_OFF KEY_WWAN KEY_RFKILL KEY_MICMUTE".split(), range(200, 249))))
+        cls.sequence("BTN_", 0x100, 10, 0)
+        cls.add(0x110, "BTN_MOUSE BTN_RIGHT BTN_MIDDLE BTN_SIDE BTN_EXTRA BTN_FORWARD BTN_BACK BTN_TASK")
+        cls.add(0x120, "BTN_JOYSTICK BTN_THUMB BTN_THUMB2 BTN_TOP BTN_TOP2 BTN_PINKIE BTN_BASE BTN_BASE2 BTN_BASE3 BTN_BASE4 BTN_BASE5 BTN_BASE6")
+        cls.values(BTN_DEAD=0x12f)
+        cls.add(0x130, "BTN_GAMEPAD BTN_EAST BTN_C BTN_NORTH BTN_WEST BTN_Z BTN_TL BTN_TR BTN_TL2 BTN_TR2 BTN_SELECT BTN_START BTN_MODE BTN_THUMBL BTN_THUMBR")
+        cls.add(0x140, "BTN_DIGI BTN_TOOL_RUBBER BTN_TOOL_BRUSH BTN_TOOL_PENCIL BTN_TOOL_AIRBRUSH BTN_TOOL_FINGER BTN_TOOL_MOUSE BTN_TOOL_LENS BTN_TOOL_QUINTTAP BTN_STYLUS3 BTN_TOUCH BTN_STYLUS BTN_STYLUS2 BTN_TOOL_DOUBLETAP BTN_TOOL_TRIPLETAP BTN_TOOL_QUADTAP")
+        cls.add(0x150, "BTN_WHEEL BTN_GEAR_UP")
+        cls.values(KEY_HANGUEL=122, KEY_SCREENLOCK=152, KEY_DIRECTION=153, KEY_DASHBOARD=204, KEY_WIMAX=246, KEY_BRIGHTNESS_ZERO=244, KEY_ZOOM=0x174, KEY_SCREEN=0x177, KEY_BRIGHTNESS_TOGGLE=0x1af, BTN_A=0x130, BTN_B=0x131, BTN_X=0x133, BTN_Y=0x134, BTN_TRIGGER=0x120, BTN_TOOL_PEN=0x140, BTN_GEAR_DOWN=0x150, SW_RADIO=3)
+        cls.add(0x160, "KEY_OK KEY_SELECT KEY_GOTO KEY_CLEAR KEY_POWER2 KEY_OPTION KEY_INFO KEY_TIME KEY_VENDOR KEY_ARCHIVE KEY_PROGRAM KEY_CHANNEL KEY_FAVORITES KEY_EPG KEY_PVR KEY_MHP KEY_LANGUAGE KEY_TITLE KEY_SUBTITLE KEY_ANGLE KEY_FULL_SCREEN KEY_MODE KEY_KEYBOARD KEY_ASPECT_RATIO KEY_PC KEY_TV KEY_TV2 KEY_VCR KEY_VCR2 KEY_SAT KEY_SAT2 KEY_CD KEY_TAPE KEY_RADIO KEY_TUNER KEY_PLAYER KEY_TEXT KEY_DVD KEY_AUX KEY_MP3 KEY_AUDIO KEY_VIDEO KEY_DIRECTORY KEY_LIST KEY_MEMO KEY_CALENDAR KEY_RED KEY_GREEN KEY_YELLOW KEY_BLUE KEY_CHANNELUP KEY_CHANNELDOWN KEY_FIRST KEY_LAST KEY_AB KEY_NEXT KEY_RESTART KEY_SLOW KEY_SHUFFLE KEY_BREAK KEY_PREVIOUS KEY_DIGITS KEY_TEEN KEY_TWEN")
+        cls.add(0x1a0, "KEY_VIDEOPHONE KEY_GAMES KEY_ZOOMIN KEY_ZOOMOUT KEY_ZOOMRESET KEY_WORDPROCESSOR KEY_EDITOR KEY_SPREADSHEET KEY_GRAPHICSEDITOR KEY_PRESENTATION KEY_DATABASE KEY_NEWS KEY_VOICEMAIL KEY_ADDRESSBOOK KEY_MESSENGER KEY_DISPLAYTOGGLE KEY_SPELLCHECK KEY_LOGOFF KEY_DOLLAR KEY_EURO KEY_FRAMEBACK KEY_FRAMEFORWARD KEY_CONTEXT_MENU KEY_MEDIA_REPEAT KEY_10CHANNELSUP KEY_10CHANNELSDOWN KEY_IMAGES")
+        cls.values(KEY_NOTIFICATION_CENTER=0x1bc, KEY_PICKUP_PHONE=0x1bd, KEY_HANGUP_PHONE=0x1be, KEY_LINK_PHONE=0x1bf)
+        cls.add(0x1c0, "KEY_DEL_EOL KEY_DEL_EOS KEY_INS_LINE KEY_DEL_LINE")
+        cls.add(0x1d0, "KEY_FN KEY_FN_ESC KEY_FN_F1 KEY_FN_F2 KEY_FN_F3 KEY_FN_F4 KEY_FN_F5 KEY_FN_F6 KEY_FN_F7 KEY_FN_F8 KEY_FN_F9 KEY_FN_F10 KEY_FN_F11 KEY_FN_F12 KEY_FN_1 KEY_FN_2 KEY_FN_D KEY_FN_E KEY_FN_F KEY_FN_S KEY_FN_B KEY_FN_RIGHT_SHIFT")
+        cls.sequence("KEY_BRL_DOT", 0x1f1, 10, 1)
+        cls.sequence("KEY_NUMERIC_", 0x200, 10, 0)
+        cls.add(0x20a, "KEY_NUMERIC_STAR KEY_NUMERIC_POUND KEY_NUMERIC_A KEY_NUMERIC_B KEY_NUMERIC_C KEY_NUMERIC_D")
+        cls.values(KEY_CAMERA_FOCUS=0x210, KEY_WPS_BUTTON=0x211, KEY_TOUCHPAD_TOGGLE=0x212, KEY_TOUCHPAD_ON=0x213, KEY_TOUCHPAD_OFF=0x214, KEY_CAMERA_ZOOMIN=0x215, KEY_CAMERA_ZOOMOUT=0x216, KEY_CAMERA_UP=0x217, KEY_CAMERA_DOWN=0x218, KEY_CAMERA_LEFT=0x219, KEY_CAMERA_RIGHT=0x21a, KEY_ATTENDANT_ON=0x21b, KEY_ATTENDANT_OFF=0x21c, KEY_ATTENDANT_TOGGLE=0x21d, KEY_LIGHTS_TOGGLE=0x21e)
+        cls.add(0x220, "BTN_DPAD_UP BTN_DPAD_DOWN BTN_DPAD_LEFT BTN_DPAD_RIGHT BTN_GRIPL BTN_GRIPR BTN_GRIPL2 BTN_GRIPR2")
+        cls.values(KEY_ALS_TOGGLE=0x230, KEY_ROTATE_LOCK_TOGGLE=0x231, KEY_REFRESH_RATE_TOGGLE=0x232)
+        cls.add(0x240, "KEY_BUTTONCONFIG KEY_TASKMANAGER KEY_JOURNAL KEY_CONTROLPANEL KEY_APPSELECT KEY_SCREENSAVER KEY_VOICECOMMAND KEY_ASSISTANT KEY_KBD_LAYOUT_NEXT KEY_EMOJI_PICKER KEY_DICTATE KEY_CAMERA_ACCESS_ENABLE KEY_CAMERA_ACCESS_DISABLE KEY_CAMERA_ACCESS_TOGGLE KEY_ACCESSIBILITY KEY_DO_NOT_DISTURB KEY_BRIGHTNESS_MIN KEY_BRIGHTNESS_MAX KEY_EPRIVACY_SCREEN_ON KEY_EPRIVACY_SCREEN_OFF KEY_ACTION_ON_SELECTION KEY_CONTEXTUAL_INSERT KEY_CONTEXTUAL_QUERY")
+
+        cls.add(0x260, "KEY_KBDINPUTASSIST_PREV KEY_KBDINPUTASSIST_NEXT KEY_KBDINPUTASSIST_PREVGROUP KEY_KBDINPUTASSIST_NEXTGROUP KEY_KBDINPUTASSIST_ACCEPT KEY_KBDINPUTASSIST_CANCEL KEY_RIGHT_UP KEY_RIGHT_DOWN KEY_LEFT_UP KEY_LEFT_DOWN KEY_ROOT_MENU KEY_MEDIA_TOP_MENU KEY_NUMERIC_11 KEY_NUMERIC_12 KEY_AUDIO_DESC KEY_3D_MODE KEY_NEXT_FAVORITE KEY_STOP_RECORD KEY_PAUSE_RECORD KEY_VOD KEY_UNMUTE KEY_FASTREVERSE KEY_SLOWREVERSE KEY_DATA KEY_ONSCREEN_KEYBOARD KEY_PRIVACY_SCREEN_TOGGLE KEY_SELECTIVE_SCREENSHOT KEY_NEXT_ELEMENT KEY_PREVIOUS_ELEMENT KEY_AUTOPILOT_ENGAGE_TOGGLE KEY_MARK_WAYPOINT KEY_SOS KEY_NAV_CHART KEY_FISHING_CHART KEY_SINGLE_RANGE_RADAR KEY_DUAL_RANGE_RADAR KEY_RADAR_OVERLAY KEY_TRADITIONAL_SONAR KEY_CLEARVU_SONAR KEY_SIDEVU_SONAR KEY_NAV_INFO KEY_BRIGHTNESS_MENU")
+
+        cls.sequence("KEY_MACRO", 0x290, 30)
+        cls.add(0x2b0, "KEY_MACRO_RECORD_START KEY_MACRO_RECORD_STOP KEY_MACRO_PRESET_CYCLE KEY_MACRO_PRESET1 KEY_MACRO_PRESET2 KEY_MACRO_PRESET3")
+        cls.add(0x2b8, "KEY_KBD_LCD_MENU1 KEY_KBD_LCD_MENU2 KEY_KBD_LCD_MENU3 KEY_KBD_LCD_MENU4 KEY_KBD_LCD_MENU5")
+        cls.values(KEY_PERFORMANCE=0x2bd)
+        cls.sequence("BTN_TRIGGER_HAPPY", 0x2c0, 40)
+        cls.values(KEY_MIN_INTERESTING=113, KEY_MAX=0x2ff, KEY_CNT=0x300)
+        cls.add(0, "REL_X REL_Y REL_Z REL_RX REL_RY REL_RZ REL_HWHEEL REL_DIAL REL_WHEEL REL_MISC")
+        cls.values(REL_RESERVED=0x0a, REL_WHEEL_HI_RES=0x0b, REL_HWHEEL_HI_RES=0x0c)
+        cls.limits("REL", 0x0f)
+        cls.add(0, "ABS_X ABS_Y ABS_Z ABS_RX ABS_RY ABS_RZ ABS_THROTTLE ABS_RUDDER ABS_WHEEL ABS_GAS ABS_BRAKE")
+        cls.add(0x10, "ABS_HAT0X ABS_HAT0Y ABS_HAT1X ABS_HAT1Y ABS_HAT2X ABS_HAT2Y ABS_HAT3X ABS_HAT3Y ABS_PRESSURE ABS_DISTANCE ABS_TILT_X ABS_TILT_Y ABS_TOOL_WIDTH")
+        cls.values(ABS_VOLUME=0x20, ABS_PROFILE=0x21, ABS_SND_PROFILE=0x22, ABS_MISC=0x28, ABS_RESERVED=0x2e)
+        cls.add(0x2f, "ABS_MT_SLOT ABS_MT_TOUCH_MAJOR ABS_MT_TOUCH_MINOR ABS_MT_WIDTH_MAJOR ABS_MT_WIDTH_MINOR ABS_MT_ORIENTATION ABS_MT_POSITION_X ABS_MT_POSITION_Y ABS_MT_TOOL_TYPE ABS_MT_BLOB_ID ABS_MT_TRACKING_ID ABS_MT_PRESSURE ABS_MT_DISTANCE ABS_MT_TOOL_X ABS_MT_TOOL_Y")
+        cls.limits("ABS", 0x3f)
+        cls.add(0, "SW_LID SW_TABLET_MODE SW_HEADPHONE_INSERT SW_RFKILL_ALL SW_MICROPHONE_INSERT SW_DOCK SW_LINEOUT_INSERT SW_JACK_PHYSICAL_INSERT SW_VIDEOOUT_INSERT SW_CAMERA_LENS_COVER SW_KEYPAD_SLIDE SW_FRONT_PROXIMITY SW_ROTATE_LOCK SW_LINEIN_INSERT SW_MUTE_DEVICE SW_PEN_INSERTED SW_MACHINE_COVER SW_USB_INSERT")
+        cls.limits("SW", 0x11)
+        cls.add(0, "MSC_SERIAL MSC_PULSELED MSC_GESTURE MSC_RAW MSC_SCAN MSC_TIMESTAMP")
+        cls.limits("MSC", 7)
+        cls.add(0, "LED_NUML LED_CAPSL LED_SCROLLL LED_COMPOSE LED_KANA LED_SLEEP LED_SUSPEND LED_MUTE LED_MISC LED_MAIL LED_CHARGING")
+        cls.limits("LED", 0x0f)
+        cls.add(0, "REP_DELAY REP_PERIOD")
+        cls.limits("REP", 1)
+        cls.add(0, "SND_CLICK SND_BELL SND_TONE")
+        cls.limits("SND", 7)
+        cls.add(0, "SND_PROFILE_SILENT SND_PROFILE_VIBRATE SND_PROFILE_RING")
+        cls.aliases(KEY_ALL_APPLICATIONS="KEY_DASHBOARD", KEY_ZOOM="KEY_FULL_SCREEN", KEY_SCREEN="KEY_ASPECT_RATIO", KEY_BRIGHTNESS_TOGGLE="KEY_DISPLAYTOGGLE", KEY_ROTATE_DISPLAY="KEY_DIRECTION", KEY_WIMAX="KEY_WWAN", KEY_BRIGHTNESS_ZERO="KEY_BRIGHTNESS_AUTO", BTN_MISC="BTN_0", BTN_LEFT="BTN_MOUSE", BTN_TRIGGER="BTN_JOYSTICK", BTN_TOOL_PEN="BTN_DIGI", BTN_GEAR_DOWN="BTN_WHEEL", BTN_TRIGGER_HAPPY="BTN_TRIGGER_HAPPY1", BTN_SOUTH="BTN_A", KEY_MACRO="KEY_MACRO")
+
+EventCodes.build()
 
 class Pointer:
     aliases = {}
@@ -1466,7 +1535,6 @@ class Pointer:
     @staticmethod
     def get_codes():
         if getattr(Pointer, "keycodes", False): return
-        EventCodes.get()
         Pointer.keycodes = dict((i.split("BTN_", 1)[-1], v) for i, v in EventCodes.codes.items() if i.startswith("BTN_"))
 
     @staticmethod
@@ -1699,7 +1767,6 @@ class Keyboard(LayerShell):
     @staticmethod
     def get_codes():
         if getattr(Keyboard, "keycodes", False): return
-        EventCodes.get()
         Keyboard.keycodes = dict((i.split("KEY_", 1)[-1], v) for i, v in EventCodes.codes.items() if i.startswith("KEY_"))
 
     @staticmethod
@@ -3140,7 +3207,11 @@ class Niri:
         if FLATPAK_ID:
             s = Path(ROOT, s)
         address = Gio.UnixSocketAddress.new(s)
-        connection = Gio.SocketClient().connect(address)
+        try:
+            connection = Gio.SocketClient().connect(address)
+        except:
+            print("Could not connect to Niri")
+            return
         connection.get_output_stream().write_all("\"EventStream\"\n".encode())
         connection.get_output_stream().close()
         reader = Gio.DataInputStream.new(connection.get_input_stream())
@@ -3174,7 +3245,11 @@ class Niri:
 class Wayfire:
     def __init__(self):
         super().__init__()
-        self.__class__.connection = connection = Gio.SocketClient().connect(Gio.UnixSocketAddress.new(GLib.getenv("WAYFIRE_SOCKET")))
+        try:
+            self.__class__.connection = connection = Gio.SocketClient().connect(Gio.UnixSocketAddress.new(GLib.getenv("WAYFIRE_SOCKET")))
+        except:
+            print("Could not connect to Wayfire")
+            return
         data = '{"method": "window-rules/events/watch", "data": {"events": ["plugin-activation-state-changed"]}}'.encode()
         connection.get_output_stream().write(len(data).to_bytes(4, byteorder="little"))
         connection.get_output_stream().write(data)
@@ -4965,9 +5040,13 @@ class ScreenCast(CancellablePrompt):
         pipeline.source.emit("push-sample", Gst.Sample.new(buffer, ImageCopy.get_caps(buffer), None, None))
         if not hasattr(pipeline, "node_id"):
             try:
-                pipeline.node_id = int(Spawner("wpctl status").output.split(". " + pipeline.pipewire.get_property("client-name"), 1)[0].rsplit(" ", 1)[-1])
-                pipeline.serial = int(Spawner(f"wpctl inspect {pipeline.node_id}").output.split("object.serial = \"", 1)[-1].split("\"", 1)[0])
-            except: pass
+                dump = json(Spawner("pw-dump --no-colors --raw", host=False).output.strip())
+                for i in dump:
+                    if not isinstance(i, dict) or i.get("type", "") != "PipeWire:Interface:Node" or i.get("info", {}).get("props", {}).get("media.name", "") != pipeline.pipewire.get_property("client-name"): continue
+                    pipeline.node_id = i["id"]
+                    pipeline.serial = i["info"]["props"]["object.id"]
+            except Exception as e:
+                print(e)
         if hasattr(pipeline, "node_id") and ScreenCast.sessions[proxy.session]["Invocations"]:
             for i in [i for i in ScreenCast.sessions[proxy.session]["Invocations"]]:
                 if ScreenCast.sessions[proxy.session].get("Audio Source", False): pass
