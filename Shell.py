@@ -252,18 +252,13 @@ class Spawner:
             if ready:
                 try:
                     data = read(read_fd, 4096)
-                except OSError:
-                    break
-                if not data:
-                    break
+                except OSError: break
+                if not data: break
                 if read_func:
-                    if read_func(self, data.decode()):
-                        break
+                    if read_func(self, data.decode()): break
                 elif hasattr(self, "read"):
-                    if self.read(data.decode()):
-                        break
-            if not pty and self.process.poll() is not None:
-                break
+                    if self.read(data.decode()): break
+            if not pty and self.process.poll() != None: break
         if pty: close(read_fd)
         else:
             self.process.stdout.close()
@@ -5515,7 +5510,7 @@ class Portal:
                 Request.export(handle, f)
                 return inv.return_value(None)
             except Exception as e:
-                if fd is not None: close(fd)
+                if fd != None: close(fd)
                 return inv.return_dbus_error("org.freedesktop.DBus.Error.Failed", str(e))
         if m == "CreateMonitor": return inv.return_value(GLib.Variant("(u)", (1,)))
         if m == "QueryEndResponse": return inv.return_value(None)
