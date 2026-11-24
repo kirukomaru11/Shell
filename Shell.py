@@ -4545,7 +4545,7 @@ class Settings(Window):
                     p.add(r)
                     self.connect(f"notify::{i.replace('_', '-')}", self.__class__.do_changed)
             if page == "Portal":
-                g = Adw.PreferencesGroup()
+                g = Adw.PreferencesGroup(title="Permissions")
                 g.add(Button(t=Adw.ButtonRow, title="Clear Stored Permissions", callback=Permission.clear))
                 p.add(g)
         stack.bind_property("visible-child-name", view.get_content(), "title", DEFAULT_BIND)
@@ -5168,8 +5168,10 @@ class UsbPrompt(CancellablePrompt):
 
 class BackgroundPrompt(CancellablePrompt):
     invocation = GObject.Property(type=Gio.DBusMethodInvocation)
+    app = GObject.Property(type=str)
     def __init__(self, inv, handle, app_id, name):
         icon = None
+        id = app_id
         if app_id and app_id + ".desktop" in DesktopApp.list.get_model():
             i = DesktopApp.list.get_model()[app_id + ".desktop"]
             app_id = i.name or app_id
@@ -5177,13 +5179,16 @@ class BackgroundPrompt(CancellablePrompt):
             i.do_icon(icon)
         heading = app_id or "Unknown App"
         heading += " wants to run in the background"
-        super().__init__(prefer_wide_layout=True, extra_child=icon, responses=["deny", "allow", "allow once"], handle=handle, heading=heading)
+        super().__init__(prefer_wide_layout=True, extra_child=icon, responses=["deny", "allow", "allow once"], handle=handle, heading=heading, default_response="allow once")
+        if id:
+            self.app = id
         self.invocation = inv
         self.present()
 
     def do(self, r):
         if not self.invocation: return
         response = self.responses.index(r)
+        if self.app and response != 2: Permission.set_permission(None, "Shell", True, "Background", self.app, str(response))
         self.invocation.return_value(GLib.Variant("(ua{sv})", (0, {"result": get_variant(response)})))
 
 class Request:
@@ -5254,7 +5259,15 @@ class Permission:
     @classmethod
     def get_permissions(cls, table, id):
         d = cls.get_data()
-        return {i["App"]: json(i["Permissions"]) for i in d.read(return_dict=True, force_tuple=True, table=cls.table, conditions='"Table" = ? AND "ID" = ?', conds=(table, id))}
+        result = {}
+        for i in d.read(return_dict=True, force_tuple=True, table=cls.table, conditions='"Table" = ? AND "ID" = ?', conds=(table, id)):
+            try:
+                result[i["App"]] = json(i["Permissions"])
+            except:
+                result[i["App"]] = str(i["Permissions"])
+            if not isinstance(result[i["App"]], str):
+                result[i["App"]] = str(result[i["App"]])
+        return result
 
     @classmethod
     def emit_changed(cls, table, id, deleted, data, permissions): PERMISSION_STORE_DBUS.bus.emit_signal(None, DBUS.path(f"{PT_ID}.PermissionStore"), f"{PT_ID}.PermissionStore", "Changed", GLib.Variant("(ssbva{sas})", (table, id, deleted, data, permissions)))
@@ -5284,6 +5297,7 @@ class Permission:
         else:
             permissions = []
         if inv: inv.return_value(GLib.Variant("(as)", (permissions,)))
+        return permissions
 
     @classmethod
     def delete_permission(cls, inv, table, id, app):
@@ -5532,7 +5546,8 @@ class Portal:
         if m == "EnableAutostart": return inv.return_value(get_variant(False))
         if m == "GetAppState": return inv.return_value(GLib.Variant("(a{sv})", ({},)))
         if m == "NotifyBackground":
-            if p[1] == INFO["ID"]: return inv.return_value(GLib.Variant("(ua{sv})", (0, {"result": get_variant(1)})))
+            permission = Permission.get_permission(None, "Shell", "Background", p[1])
+            if type(permission) == int: return inv.return_value(GLib.Variant("(ua{sv})", (0, {"result": get_variant(permission)})))
             BackgroundPrompt(inv, *p)
             return
         if m == "AcquireDevices":
@@ -5693,8 +5708,6 @@ COLOR = Regex(VALUE)
 HAS_COLOR = Regex(rf"^(?:{VALUE}|\[\s*['\"]{VALUE}['\"](?:\s*,\s*['\"]{VALUE}['\"])*\s*\]|\s*{VALUE}(?:\s*,\s*{VALUE})*\s*)$")
 
 APP_CSS = """
-.header-suffix { border-spacing: 4px; }
-
 background { color: var(--window-fg-color); }
 background .clock { font-size: 20px; margin: 16px; }
 
